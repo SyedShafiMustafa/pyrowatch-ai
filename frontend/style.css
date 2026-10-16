@@ -264,3 +264,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, .file-button:fo
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Event history uses the existing detail-card vocabulary without changing the workspace grid. */
+#timelineEvent { width: 100%; padding: 7px; margin: 7px 0; }
+#timelineContent { max-height: 600px; overflow: auto; overflow-wrap: anywhere; }
+#timelineContent h3, #timelineContent h4 { font-size: 13px; }
+.timeline-list { padding-left: 22px; }
+.timeline-entry { border-left: 2px solid var(--line); padding-left: 8px; margin-bottom: 14px; }
+.timeline-entry button:disabled { color: var(--muted); text-decoration: none; cursor: default; }
