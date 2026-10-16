@@ -28,9 +28,20 @@ def _observed_bbox_km2(group):
         return None
     lat = group["latitude"].to_numpy(dtype=float)
     lon = group["longitude"].to_numpy(dtype=float)
+    if (not np.isfinite(lat).all() or not np.isfinite(lon).all()
+            or (lat < -90).any() or (lat > 90).any()):
+        raise ValueError("coordinates must be finite and latitude must be in range")
     lat_km = (lat.max() - lat.min()) * 111.32
-    lon_km = (lon.max() - lon.min()) * 111.32 * math.cos(math.radians(float(lat.mean())))
-    return float(max(0, lat_km * lon_km))
+    # Longitude is circular: take the complement of the largest gap between
+    # sorted longitudes so a small cluster spanning +/-180 degrees stays small.
+    circular_lon = np.sort(np.mod(lon, 360.0))
+    gaps = np.diff(np.r_[circular_lon, circular_lon[0] + 360.0])
+    lon_span = float(np.clip(360.0 - gaps.max(), 0.0, 360.0))
+    lon_km = lon_span * 111.32 * max(0.0, math.cos(math.radians(float(lat.mean()))))
+    area = float(max(0.0, lat_km * lon_km))
+    if not math.isfinite(area):
+        raise ValueError("observed coordinate bounding-box area must be finite")
+    return area
 
 
 def extract_event_features(observations: pd.DataFrame):

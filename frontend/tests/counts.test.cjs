@@ -28,7 +28,7 @@ class Element {
   get options() { return this.children; }
 }
 
-function dashboard() {
+function dashboard(protocol = 'http:') {
   const elements = new Map();
   const calls = [];
   const blobs = [];
@@ -39,9 +39,18 @@ function dashboard() {
       latitude: -33, longitude: 150, time: '2026-10-10T00:00:00Z',
       satellite: 'N20', instrument: 'VIIRS', confidence_raw: 'h',
       confidence: 1, frp: 5, score: 62, why: 'backend explanation',
-      repeat_count: 0, source_line: 2, source_fields: {}, possible_static_source: false
+      repeat_count: 0, source_line: 2, source_fields: {}, possible_static_source: false,
+      persistent_source_status: 'insufficient_history', event_id: 7
     }],
-    events: [],
+    events: [{event_id: 7, pixels: 1, top_score: 62, peak_frp: 5,
+      first_seen: '2026-10-10T00:00:00Z', last_seen: '2026-10-10T00:00:00Z', duration_h: 0,
+      lat: -33, lon: 150}],
+    intelligence: {
+      model: {status: 'unavailable', version: 'phase4-event-iforest-v1', reason: 'model artifact is missing'},
+      events: [{event_id: 7,
+        trend: {status: 'insufficient_data', reason: 'need at least three valid-FRP acquisition times'},
+        anomaly: {status: 'unavailable', model_version: 'phase4-event-iforest-v1', anomaly_score: null, anomaly_flag: null}}]
+    },
     evaluation: null,
     ingestion: {
       total_records: 3, accepted: 1, rejected: 1, deduplicated: 1,
@@ -89,7 +98,7 @@ function dashboard() {
         return element;
       }
     },
-    window: {},
+    window: {location: {protocol}},
     Option: class { constructor(text, value) { this.textContent = text; this.value = value; } },
     FormData: Form,
     URL: Object.assign(class extends URL {}, {
@@ -128,6 +137,11 @@ test('dashboard health, sample, and upload use the configured backend and render
   assert.equal(elements.get('mDuplicates').textContent, '1');
   assert.equal(elements.get('mTotal').textContent, '3');
   assert.equal(elements.get('mVisible').textContent, '1');
+  assert.equal(elements.get('tb').children[0].children[6].textContent, 'Insufficient history');
+  const displayed = createdElements.map(element => element.textContent).filter(Boolean).join('\n');
+  assert.match(displayed, /Model anomaly analysis: unavailable: model artifact is missing/);
+  assert.match(displayed, /Observed FRP trend: insufficient_data/);
+  assert.match(displayed, /Anomaly indicator: unavailable \(phase4-event-iforest-v1\)/);
 
   const file = {name: 'valid.csv'};
   await elements.get('file').listeners.change({target: {files: [file]}});
@@ -172,4 +186,14 @@ test('dashboard health, sample, and upload use the configured backend and render
   assert.equal(calls[2].options.body.file, file);
   assert.equal(calls[3].options.method, 'POST');
   assert.equal(calls[3].options.body.file, invalidFile);
+});
+
+test('file URL explains that the dashboard must be served over HTTP', async () => {
+  const {elements, calls} = dashboard('file:');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(elements.get('connectionStatus').textContent, 'API unavailable');
+  assert.match(elements.get('datasetMessage').textContent, /opened as a local file.*http:\/\/127\.0\.0\.1:8010\//);
+  await elements.get('bSample').listeners.click();
+  assert.match(elements.get('datasetMessage').textContent, /opened as a local file/);
+  assert.equal(calls.length, 0);
 });

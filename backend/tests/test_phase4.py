@@ -92,6 +92,39 @@ def test_observed_footprint_change_uses_timestamp_groups():
     assert features["detection_frequency_delta"] is None
 
 
+def test_wrapped_footprint_is_bounded_for_antimeridian_event():
+    frame = observations(frps=(2, 3, 4, 5), hours=(0, 0, 8, 8))
+    frame["latitude"] = [10.0, 10.001, 10.0, 10.002]
+    frame["longitude"] = [179.999, -179.999, 179.998, -179.998]
+
+    features = extract_event_features(frame)[0]["features"]
+    expected_first = (0.001 * 111.32) * (0.002 * 111.32 * np.cos(np.radians(10.0005)))
+    expected_last = (0.002 * 111.32) * (0.004 * 111.32 * np.cos(np.radians(10.001)))
+    footprint_delta = features["observed_footprint_delta_km2"]
+
+    assert np.isfinite(footprint_delta)
+    assert footprint_delta >= 0
+    assert footprint_delta == pytest.approx(expected_last - expected_first, rel=1e-8)
+    assert footprint_delta < 1  # A longitude wrap must not create a global-width box.
+    # The unchanged feature schema remains acceptable to the anomaly pipeline.
+    matrix = feature_matrix([{"event_id": 0, "features": features}])
+    assert np.isfinite(matrix["observed_footprint_delta_km2"].iloc[0])
+
+
+def test_non_crossing_footprint_retains_coordinate_span_semantics():
+    frame = observations(frps=(2, 3, 4, 5), hours=(0, 0, 8, 8))
+    frame["latitude"] = [10.0, 10.001, 10.0, 10.002]
+    frame["longitude"] = [20.0, 20.002, 20.0, 20.004]
+
+    features = extract_event_features(frame)[0]["features"]
+    expected_first = (0.001 * 111.32) * (0.002 * 111.32 * np.cos(np.radians(10.0005)))
+    expected_last = (0.002 * 111.32) * (0.004 * 111.32 * np.cos(np.radians(10.001)))
+
+    assert np.isfinite(features["observed_footprint_delta_km2"])
+    assert features["observed_footprint_delta_km2"] == pytest.approx(
+        expected_last - expected_first, rel=1e-8)
+
+
 @pytest.mark.parametrize("frps,expected", [
     ((2, 3, 8), "rising"), ((8, 4, 2), "falling"),
     ((3, 3.2, 3.5), "stable"),
