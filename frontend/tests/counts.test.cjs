@@ -27,13 +27,21 @@ class Element {
   setAttribute(name, value) { this[name] = value; }
   hasAttribute(name) { return Object.hasOwn(this, name); }
   scrollIntoView() {}
-  focus() { this.focused = true; }
+  focus() { this.focused = true; if(this.ownerDocument)this.ownerDocument.activeElement=this; }
+  querySelectorAll(selector) {
+    const children = this.children.flatMap(child => [child, ...(child.querySelectorAll?.('*') || [])]);
+    if(selector==='*')return children;
+    if(selector==='.event-history-row')return children.filter(child=>child.className==='event-history-row');
+    if(selector==='button')return children.filter(child=>child.tagName==='button');
+    return [];
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
   remove() { this.removed = true; }
   get lastChild() { return this.children.at(-1); }
   get options() { return this.children; }
 }
 
-function dashboard(sampleOverride = null) {
+function dashboard(sampleOverride = null, protocol = 'http:') {
   const elements = new Map();
   const calls = [];
   const blobs = [];
@@ -95,23 +103,25 @@ function dashboard(sampleOverride = null) {
   class Form {
     append(name, value) { this[name] = value; }
   }
-  const context = vm.createContext({
-    document: {
+  const testDocument = {
       activeElement: null,
       addEventListener(name, fn) { documentListeners[name] = fn; },
       createTextNode(text) { return {textContent: text}; },
       getElementById(id) {
-        if (!elements.has(id)) elements.set(id, new Element());
+        if (!elements.has(id)) { const node=new Element(); node.ownerDocument=testDocument; elements.set(id,node); }
         return elements.get(id);
       },
       createElement(tagName) {
         const element = new Element();
+        element.ownerDocument=testDocument;
         element.tagName = tagName;
         createdElements.push(element);
         return element;
       }
-    },
-    window: {},
+    };
+  const context = vm.createContext({
+    document: testDocument,
+    window: {location: {protocol, port: protocol==='file:'?'':'8010', origin: protocol==='file:'?'null':'http://127.0.0.1:8010'}},
     Option: class { constructor(text, value) { this.textContent = text; this.value = value; } },
     FormData: Form,
     URL: Object.assign(class extends URL {}, {
@@ -137,7 +147,7 @@ function dashboard(sampleOverride = null) {
   elements.set('filterRail', new Element());
   elements.get('filterRail').hidden = true;
   vm.runInContext(source, context);
-  return {elements, calls, blobs, createdElements, documentListeners};
+  return {elements, calls, blobs, createdElements, documentListeners, document: testDocument};
 }
 
 test('dashboard health, sample, and upload use the configured backend and render API ingestion counts', async () => {
@@ -249,4 +259,86 @@ test('empty responses without optional Phase 4 fields render safely', async () =
   assert.equal(elements.get('weightsPanel').hidden, true);
   assert.match(elements.get('evaluationContent').children[0].textContent, /No labelled evaluation/i);
   assert.match(elements.get('eventContent').children[0].textContent, /No event records/i);
+});
+
+
+test('file URL gives HTTP guidance without contacting the API', async () => {
+  const {elements,calls}=dashboard(null,'file:');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(elements.get('connectionStatus').textContent,'API unavailable');
+  assert.match(elements.get('datasetMessage').textContent,/Open the dashboard over HTTP/);
+  await elements.get('bSample').listeners.click();
+  assert.equal(calls.length,0);
+});
+
+const nodes = element => [element,...(element.children||[]).flatMap(nodes)];
+const textOf = element => nodes(element).map(node=>node.textContent||'').join('\n');
+const history = elements => nodes(elements.get('dossierContent')).filter(node=>node.className==='event-history-row');
+const historyButton = item => nodes(item).find(node=>node.tagName==='button');
+const specialRows = [
+  {event_id:0,time:'2026-10-12T00:00:00Z',score:70,frp:0,c_frp:0},
+  {event_id:0,time:'2026-10-10T00:00:00Z',score:70,confidence_raw:'<img src=x onerror=alert(1)>'},
+  {event_id:0,time:'2026-10-10T00:00:00Z',score:70,confidence_raw:'<img src=x onerror=alert(1)>'},
+  {event_id:0,time:'invalid',score:5},
+  {event_id:0,time:null,score:5},
+  {event_id:1,time:'2026-10-09T00:00:00Z',score:30}
+].map((row,index)=>({latitude:10,longitude:20,satellite:'N20',instrument:'VIIRS',source_line:index+2,...row}));
+const specialPayload={rows:specialRows,events:[{event_id:0,pixels:5,top_score:70},{event_id:1,pixels:1,top_score:30}],issues:[],ingestion:{accepted:6,rejected:0,deduplicated:0,total_records:6,data_kind:'synthetic'}};
+
+test('event dossier retains every row, chronological order, ties, zero and missing evidence', async () => {
+  const before=JSON.stringify(specialPayload.rows);
+  const {elements,createdElements}=dashboard(specialPayload);
+  await elements.get('bSample').listeners.click();
+  const eventZero=elements.get('eventContent').children.find(node=>textOf(node).includes('Event 0'));
+  eventZero.listeners.click();
+  const items=history(elements);
+  assert.equal(items.length,5);
+  assert.match(textOf(items[0]),/2026-10-10 00:00:00 UTC/);
+  assert.match(textOf(items[1]),/2026-10-10 00:00:00 UTC/);
+  assert.match(textOf(items[2]),/2026-10-12 00:00:00 UTC/);
+  assert.equal(new Set(items.map(item=>item.dataset.key)).size,5);
+  assert.match(textOf(elements.get('dossierContent')),/Time unavailable or invalid/);
+  assert.match(textOf(elements.get('dossierContent')),/3 observations share the reported maximum/);
+  assert.match(textOf(items[0]),/<img src=x onerror=alert\(1\)>/);
+  assert.ok(!createdElements.some(node=>node.tagName==='img'));
+  assert.equal(JSON.stringify(specialPayload.rows),before);
+  assert.equal(specialPayload.rows[0].c_frp,0);
+  assert.equal(Object.hasOwn(specialPayload.rows[1],'c_frp'),false);
+});
+
+test('history selection restores focus by key, respects filters, and ignores stale data', async () => {
+  const {elements,document}=dashboard(specialPayload);
+  await elements.get('bSample').listeners.click();
+  elements.get('frpMin').listeners.input({target:{value:'1'}});
+  const eventZero=elements.get('eventContent').children.find(node=>textOf(node).includes('Event 0'));
+  eventZero.listeners.click();
+  assert.equal(history(elements).length,5);
+  assert.equal(elements.get('mVisible').textContent,'0');
+  elements.get('frpMin').listeners.input({target:{value:''}});
+  eventZero.listeners.click();
+  const item=history(elements)[1],key=item.dataset.key,button=historyButton(item);
+  button.focus();button.listeners.click();
+  const successor=history(elements).find(node=>node.dataset.key===key);
+  assert.notEqual(historyButton(successor),button);
+  assert.equal(document.activeElement,historyButton(successor));
+  elements.get('bSample').focus();
+  await elements.get('bSample').listeners.click();
+  assert.equal(document.activeElement,elements.get('bSample'));
+  const count=history(elements).length;
+  button.listeners.click();
+  assert.equal(history(elements).length,count);
+  assert.equal(document.activeElement,elements.get('bSample'));
+});
+
+
+test('official contribution display distinguishes zero from absent fields and remains separate from exploratory mode', async () => {
+  const {elements}=dashboard(specialPayload);
+  await elements.get('bSample').listeners.click();
+  elements.get('eventContent').children.find(node=>textOf(node).includes('Event 0')).listeners.click();
+  const entries=history(elements);
+  historyButton(entries[2]).listeners.click();
+  assert.match(textOf(elements.get('scoreContent')),/frp: 0.00 score points/);
+  historyButton(history(elements)[0]).listeners.click();
+  assert.match(textOf(elements.get('scoreContent')),/frp: Contribution unavailable/);
+  assert.match(textOf(elements.get('scoreContent')),/Official review priority: 70.0 \/ 100/);
 });

@@ -922,3 +922,7 @@ tr.observation-row[aria-selected="true"] td:first-child { box-shadow: inset 3px 
   .deck.filters-open > .rail { position: fixed; z-index: 9998; top: 12px; right: 12px; bottom: 12px; left: auto; width: min(360px, calc(100vw - 24px)); max-height: none; border: 1px solid #354a53; box-shadow: 0 18px 60px rgb(0 0 0 / 55%); }
   .filter-close { display: inline-flex; }
 }
+
+.event-history { max-height: 520px; overflow: auto; padding-left: 22px; }
+.event-history-row { overflow-wrap: anywhere; border-left: 2px solid var(--line); padding: 0 0 10px 8px; margin-bottom: 10px; }
+.event-history-row button:disabled { color: var(--muted); text-decoration: none; cursor: default; }

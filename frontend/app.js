@@ -38,6 +38,7 @@
   const escAttr = value => String(value).replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
   async function request(path, options = {}) {
+    if (window.location?.protocol === "file:") throw new Error("Open the dashboard over HTTP, such as http://127.0.0.1:8010/, so the API can be reached.");
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
     let response;
@@ -515,10 +516,21 @@
         legend.append(entry);
       });
       box.append(legend);
-      if (Array.isArray(row.score_missing_factors) && row.score_missing_factors.length) {
-        box.append(el("p", "panel-note", `Missing factors treated as zero by the score: ${row.score_missing_factors.join(", ")}.`));
-      }
     }
+    const missing = new Set(Array.isArray(row.score_missing_factors) ? row.score_missing_factors : []);
+    const factorMeaning = {
+      recency: "Relative to the latest acquisition in this dataset, with a 24-hour half-life; not relative to today.",
+      confidence: "API-normalized confidence for this detection.",
+      frp: "Bounded logarithmic factor of the supplied FRP measurement.",
+      repeats: "Other distinct acquisition times in an approximate 0.02° spatial bin within ±72 hours; not the event row count.",
+      brightness: "Bounded factor from the supplied brightness measurement."
+    };
+    for (const factor of FACTORS) {
+      const value = row[`c_${factor}`];
+      const contribution = value == null || !Number.isFinite(Number(value)) ? "Contribution unavailable" : missing.has(factor) ? `Missing measurement; backend assigns ${fmt(value, 2)} points` : `${fmt(value, 2)} score points`;
+      box.append(el("p", "panel-note", `${factor}: ${contribution}. ${factorMeaning[factor]}`));
+    }
+    box.append(el("p", "panel-note", "These are API-reported contributions, separate from raw sensor measurements. The score is an uncalibrated review priority, not a fire probability or spread prediction."));
   }
   function renderObservation(row) {
     const box = $("detailContent");
@@ -555,6 +567,50 @@
     const list = state.intelligence?.events;
     return Array.isArray(list) ? list.find(item => String(item.event_id) === String(eventId)) || null : null;
   }
+  // Keep invalid or timezone-free values separate; they cannot be placed on a UTC timeline.
+  function observedUtc(value) {
+    if (typeof value !== "string") return null;
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/);
+    if (!match) return null;
+    const [, year, month, day, hour, minute, second] = match.map(Number);
+    if (month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate() || hour > 23 || minute > 59 || second > 59) return null;
+    return parsedDate(value);
+  }
+  function renderEventHistory(box, eventId, members) {
+    const dated = members.map(row => ({row, at: observedUtc(row.time)})).filter(item => item.at).sort((a, b) => a.at - b.at);
+    const undated = members.filter(row => !observedUtc(row.time)).map(row => ({row, at: null}));
+    box.append(el("h3", "score-heading", "Event observation history"));
+    box.append(el("p", "panel-note", `${members.length} accepted observations in this response, independent of table filters. Gaps do not prove activity stopped; location differences alone do not prove physical spread.`));
+    if (!members.length) { box.append(el("p", "panel-note", "No accepted observations are available for this event.")); return; }
+    const dataset = state.rows;
+    const visible = new Set(filteredRows().map(row => state.keys.get(row)));
+    for (const [heading, items] of [["Chronological observations (UTC)", dated], ["Time unavailable or invalid", undated]]) {
+      if (!items.length) continue;
+      box.append(el("h4", "score-heading", heading));
+      const list = el("ol", "event-history");
+      for (const {row, at} of items) {
+        const key = state.keys.get(row), item = el("li", "event-history-row"), facts = el("dl", "detail-list");
+        item.dataset.key = key;
+        detailLine(facts, "Acquisition time (supplied; UTC)", at ? fmtTime(row.time) : "Unavailable / invalid");
+        if (!at && row.time != null) detailLine(facts, "Time value received", row.time);
+        for (const [label, value] of [["Latitude (supplied)", row.latitude], ["Longitude (supplied)", row.longitude], ["Satellite (supplied)", row.satellite], ["Instrument (supplied)", row.instrument], ["Raw confidence (supplied)", row.confidence_raw], ["FRP (supplied; API units unspecified)", row.frp], ["Normalized confidence (derived by API)", fmt(row.confidence, 3)], ["Elapsed from first timed observation (derived)", at ? `${fmt((at - dated[0].at) / 3600000, 3)} h` : null]]) detailLine(facts, label, value);
+        item.append(facts);
+        const button = el("button", "text-button", visible.has(key) ? "Select observation" : "Hidden by table filters");
+        button.type = "button"; button.disabled = !visible.has(key); button.setAttribute("aria-pressed", String(state.selectedKey === key));
+        button.addEventListener("click", () => {
+          if (state.rows !== dataset || button.disabled) return;
+          const restore = document.activeElement === button;
+          selectObservation(key);
+          // The dossier is rebuilt by selection. Find the equivalent by key, never by index or a data-derived selector.
+          const successor = [...($("dossierContent")?.querySelectorAll?.(".event-history-row") || [])]
+            .find(node => node.dataset.key === key)?.querySelector("button");
+          if (restore && state.rows === dataset && successor && !successor.disabled) successor.focus();
+        });
+        item.append(button); list.append(item);
+      }
+      box.append(list);
+    }
+  }
   function renderDossier(eventId) {
     const box = $("dossierContent");
     if (!box) return;
@@ -562,7 +618,7 @@
     state.selectedEvent = eventId == null ? null : String(eventId);
     const event = eventData(eventId);
     const intel = eventIntelligence(eventId);
-    if (!event && !intel) { box.append(el("p", "panel-note", "Event details are unavailable for this observation.")); return; }
+    if (!event && !intel && !state.rows.some(row => row.event_id != null && String(row.event_id) === String(eventId))) { box.append(el("p", "panel-note", "Event details are unavailable for this observation.")); return; }
     box.append(el("h3", "", `Event ${event?.event_id ?? intel?.event_id ?? "Unavailable"}`));
     const info = el("dl", "detail-list");
     [
@@ -594,12 +650,34 @@
       box.append(el("p", "badge steel", `Anomaly score ${fmt(anomaly.anomaly_score, 4)} · ${anomaly.model_version || "version unavailable"}`));
       box.append(el("p", "panel-note", "Uncalibrated anomaly indicator. It is not a probability of fire."));
     }
-    const members = state.rows.filter(row => String(row.event_id) === String(eventId));
+    const members = state.rows.filter(row => row.event_id != null && String(row.event_id) === String(eventId));
     const possible = members.filter(row => row.persistent_source_status === "possible_persistent_source").length;
     box.append(el("h3", "score-heading", "Historical recurrence"));
+    const insufficient = members.filter(row => row.persistent_source_status === "insufficient_history").length;
+    const notFlagged = members.filter(row => row.persistent_source_status === "not_flagged").length;
     box.append(el("p", "panel-note", members.length
-      ? `${possible} of ${members.length} observations carry the possible-persistent-source recurrence flag. This does not identify a source type.`
+      ? `${possible} flagged possible persistent source; ${notFlagged} not flagged; ${insufficient} with insufficient history. Other statuses are unavailable. These do not identify a source type.`
       : "No associated observations are available."));
+    const highest = members.filter(row => event?.top_score != null && Number(row.score) === Number(event.top_score));
+    box.append(el("h3", "score-heading", "Why this event has its priority"));
+    box.append(el("p", "panel-note", `The event priority is the highest individual observation score, not an average or a fire probability. ${highest.length} observation${highest.length === 1 ? "" : "s"} share the reported maximum.`));
+    if (highest.length) {
+      const list = el("ul", "");
+      for (const row of highest) {
+        const item = el("li", ""), button = el("button", "text-button", `${fmtTime(row.time)} · ${fmt(row.score, 1)} / 100 · ${row.why || "Explanation unavailable"}`);
+        button.type = "button"; button.addEventListener("click", () => selectObservation(state.keys.get(row)));
+        item.append(button); list.append(item);
+      }
+      box.append(list);
+    } else box.append(el("p", "panel-note", "The source observation for the reported event maximum is unavailable in this response."));
+    const missing = [...new Set(members.flatMap(row => Array.isArray(row.score_missing_factors) ? row.score_missing_factors : []))];
+    box.append(el("h3", "score-heading", "Evidence and uncertainty"));
+    box.append(el("p", "panel-note", missing.length ? `Some observations lack ${missing.join(", ")}; the backend treats missing score factors as zero.` : "No score factors are marked missing in the returned observations."));
+    const missingFeatures = Array.isArray(intel?.missing_features) ? intel.missing_features : null;
+    box.append(el("p", "panel-note", missingFeatures === null ? "Event feature availability was not reported by the API." : missingFeatures.length ? `Event features unavailable: ${missingFeatures.join(", ")}.` : "No event features are marked missing by the API."));
+    box.append(el("p", "panel-note", members.some(row => row.persistent_source_status === "insufficient_history") ? "Historical recurrence is insufficient for at least one observation." : "Recurrence status is based only on the available archive."));
+    box.append(el("p", "panel-note", "Satellite detections do not confirm wildfire identity, continuous activity, physical spread, or calibrated risk."));
+    renderEventHistory(box, eventId, members);
     const top = [...members].sort((a, b) => compareBy(a, b, "score", false)).slice(0, 5);
     if (top.length) {
       const list = el("ul", "");

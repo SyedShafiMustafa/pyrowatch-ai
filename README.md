@@ -1,16 +1,26 @@
 # Fire detection triage (AI/ML 1)
 Explainable ranking of NASA FIRMS active-fire detections for analyst review. **Decision support only; detections are not confirmed fires and this is not an emergency-response system.**
 
-## Run (offline, ~2 min)
-```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python scripts/make_synthetic.py
-uvicorn backend.app.main:app --reload --app-dir .
-# open http://127.0.0.1:8000
-pytest backend/tests
+## Run locally (Windows PowerShell)
+
+From the repository root, start the backend on the port used by the dashboard:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --app-dir . --host 127.0.0.1 --port 8010
 ```
-(If the import path fails, run from `backend/`: `cd backend && uvicorn app.main:app --reload`, and serve the frontend from the repo root.)
+
+Then open <http://127.0.0.1:8010/>. FastAPI serves the frontend from this URL,
+so the page and API share an origin. Do not open `frontend/index.html` directly:
+browser requests from a `file://` page have an opaque `null` origin and are not
+allowed by the API's local development CORS policy.
+
+To serve the frontend separately for development, run
+`python -m http.server 5500 --bind 127.0.0.1 --directory frontend` from the
+repository root and open <http://127.0.0.1:5500/>. The API explicitly allows
+that local origin. Run tests with
+`.\.venv\Scripts\python.exe -m pytest backend/tests -q`.
 
 ## Layout
 Phase 1 ingestion audit and conventions: [docs/AUDIT.md](docs/AUDIT.md).
