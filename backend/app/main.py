@@ -2,6 +2,7 @@ from pathlib import Path
 import io
 import pandas as pd
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .validation import load_csv_text
@@ -12,6 +13,16 @@ from .evaluation import compare
 
 ROOT = Path(__file__).resolve().parents[2]
 app = FastAPI(title="Fire detection triage", description="Decision support for review only. Not an emergency-response system.")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 
 def _pipeline(text: str, data_kind="user_supplied_unverified"):
