@@ -17,32 +17,50 @@ class Element {
     this.hidden = false;
     this.disabled = false;
     this.rows = this.children;
+    this.tagName = '';
   }
   addEventListener(name, fn) { this.listeners[name] = fn; }
   append(...nodes) { this.children.push(...nodes); }
   add(node) { this.children.push(node); }
   click() { this.clicked = true; }
   replaceChildren(...nodes) { this.children = nodes; this.rows = nodes; }
-  setAttribute() {}
+  setAttribute(name, value) { this[name] = value; }
+  hasAttribute(name) { return Object.hasOwn(this, name); }
   scrollIntoView() {}
+  focus() { this.focused = true; }
+  remove() { this.removed = true; }
+  get lastChild() { return this.children.at(-1); }
   get options() { return this.children; }
 }
 
-function dashboard() {
+function dashboard(sampleOverride = null) {
   const elements = new Map();
   const calls = [];
   const blobs = [];
   const createdElements = [];
+  const documentListeners = {};
   const sample = {
     issues: ['schema warning', 'duplicate notice'],
     rows: [{
       latitude: -33, longitude: 150, time: '2026-10-10T00:00:00Z',
       satellite: 'N20', instrument: 'VIIRS', confidence_raw: 'h',
-      confidence: 1, frp: 5, score: 62, why: 'backend explanation',
+      confidence: 1, frp: 5, score: 62, why: 'backend explanation', event_id: 7,
+      f_recency: 0.2, f_confidence: 1, f_frp: 0.3, f_repeats: 0, f_brightness: 0.4,
+      c_recency: 5, c_confidence: 20, c_frp: 7.5, c_repeats: 0, c_brightness: 4,
       repeat_count: 0, source_line: 2, source_fields: {}, possible_static_source: false
     }],
-    events: [],
-    evaluation: null,
+    events: [{event_id: 7, pixels: 1, first_seen: '2026-10-10T00:00:00Z', last_seen: '2026-10-10T00:00:00Z', top_score: 62, peak_frp: 5, lat: -33, lon: 150}],
+    intelligence: {
+      model: {status: 'unavailable', reason: 'model artifact is missing'},
+      events: [{event_id: 7, features: {detection_count: 1}, trend: {status: 'insufficient_data', reason: 'not enough acquisition times', span_h: 0}, anomaly: {status: 'unavailable', anomaly_score: null}}]
+    },
+    weights: {recency: 0.25, confidence: 0.2, frp: 0.25, repeats: 0.2, brightness: 0.1},
+    evaluation: {
+      triage_score: {'p@10': 0.7, 'p@25': 0.6},
+      frp_only: {'p@10': 0.6, 'p@25': 0.5},
+      n_labelled: 20,
+      interpretation: 'descriptive ranking check; labels require independent provenance'
+    },
     ingestion: {
       total_records: 3, accepted: 1, rejected: 1, deduplicated: 1,
       physical_lines: 4, columns: ['latitude', 'longitude'],
@@ -54,12 +72,13 @@ function dashboard() {
       data_kind: 'synthetic'
     }
   };
+  const samplePayload = sampleOverride || sample;
   const uploaded = {
     ...sample,
     rows: [
       {...sample.rows[0], confidence_raw: '=1+1', why: '=2+2, \"quoted\"'},
-      {...sample.rows[0], latitude: -34, longitude: 151, time: '2026-10-11T00:00:00Z', satellite: 'N20', source_line: 3},
-      {...sample.rows[0], latitude: -35, longitude: 152, time: '2026-10-12T00:00:00Z', satellite: 'N21', source_line: 4}
+      {...sample.rows[0], latitude: -34, longitude: 151, time: '2026-10-11T00:00:00Z', satellite: 'N20', source_line: 3, score: 70, f_frp: 0.9},
+      {...sample.rows[0], latitude: -35, longitude: 152, time: '2026-10-12T00:00:00Z', satellite: 'N21', source_line: 4, score: 60, f_frp: 0.1}
     ],
     ingestion: {
       ...sample.ingestion,
@@ -78,6 +97,9 @@ function dashboard() {
   }
   const context = vm.createContext({
     document: {
+      activeElement: null,
+      addEventListener(name, fn) { documentListeners[name] = fn; },
+      createTextNode(text) { return {textContent: text}; },
       getElementById(id) {
         if (!elements.has(id)) elements.set(id, new Element());
         return elements.get(id);
@@ -103,7 +125,7 @@ function dashboard() {
     fetch: async (url, options = {}) => {
       const target = String(url);
       calls.push({url: target, options});
-      if (target.endsWith('/api/sample')) return jsonResponse(sample);
+      if (target.endsWith('/api/sample')) return jsonResponse(samplePayload);
       if (target.endsWith('/api/upload')) {
         return options.body.file.name === 'invalid.csv'
           ? jsonResponse({detail: 'Upload must be UTF-8 CSV'}, 400)
@@ -112,8 +134,10 @@ function dashboard() {
       return jsonResponse({ok: true});
     }
   });
+  elements.set('filterRail', new Element());
+  elements.get('filterRail').hidden = true;
   vm.runInContext(source, context);
-  return {elements, calls, blobs, createdElements};
+  return {elements, calls, blobs, createdElements, documentListeners};
 }
 
 test('dashboard health, sample, and upload use the configured backend and render API ingestion counts', async () => {
@@ -128,6 +152,15 @@ test('dashboard health, sample, and upload use the configured backend and render
   assert.equal(elements.get('mDuplicates').textContent, '1');
   assert.equal(elements.get('mTotal').textContent, '3');
   assert.equal(elements.get('mVisible').textContent, '1');
+  assert.equal(elements.get('timelineDensity').children.length, 1, 'timeline density uses the sample acquisition timestamp');
+  assert.equal(elements.get('mapEmptyState').hidden, true, 'coordinate-valid observations reveal the map');
+
+  await elements.get('toggleFilters').listeners.click();
+  assert.equal(elements.get('filterRail').hidden, false, 'filter rail opens on demand');
+  assert.equal(elements.get('toggleFilters')['aria-expanded'], 'true');
+  await elements.get('closeFilters').listeners.click();
+  assert.equal(elements.get('filterRail').hidden, true, 'filter rail closes on demand');
+  assert.equal(elements.get('toggleFilters')['aria-expanded'], 'false');
 
   const file = {name: 'valid.csv'};
   await elements.get('file').listeners.change({target: {files: [file]}});
@@ -137,6 +170,33 @@ test('dashboard health, sample, and upload use the configured backend and render
   assert.equal(elements.get('mRejected').textContent, '0');
   assert.equal(elements.get('mDuplicates').textContent, '0');
   assert.equal(elements.get('mVisible').textContent, '3');
+  assert.equal(elements.get('tlRange').max, '2');
+  assert.equal(elements.get('tb').children[0].children.length, 9);
+
+  elements.get('tlRange').value = '0';
+  elements.get('tlRange').listeners.input({target: elements.get('tlRange')});
+  assert.equal(elements.get('mVisible').textContent, '1', 'timeline scrubbing limits the shared dataset');
+  elements.get('tlRange').value = '2';
+  elements.get('tlRange').listeners.input({target: elements.get('tlRange')});
+  assert.equal(elements.get('mVisible').textContent, '3', 'moving to the final acquisition restores all dated rows');
+
+  elements.get('eventContent').children[0].listeners.click();
+  assert.ok(elements.get('dossierContent').children.length > 0);
+  assert.ok(elements.get('dossierContent').children.some(child => child.textContent === 'Anomaly indicator'));
+  assert.ok(elements.get('dossierContent').children.some(child => child.textContent === 'Unavailable'));
+
+  elements.get('modeDuel').listeners.click();
+  assert.equal(elements.get('duelWrap').hidden, false);
+  assert.equal(elements.get('duelListContent').hidden, false, 'comparison falls back to rankings when Leaflet is unavailable');
+  assert.match(elements.get('duelNote').children[0].textContent, /Top-25 overlap/);
+
+  elements.get('openPalette').listeners.click();
+  assert.equal(elements.get('palette').hidden, false);
+  elements.get('paletteInput').value = 'Compare triage';
+  elements.get('paletteInput').listeners.input();
+  elements.get('paletteList').children[0].children[1].listeners.click();
+  assert.equal(elements.get('palette').hidden, true);
+  assert.equal(elements.get('duelWrap').hidden, false, 'palette command performs its advertised action');
 
   const preservedCount = elements.get('resultCount').textContent;
   const invalidFile = {name: 'invalid.csv'};
@@ -172,4 +232,21 @@ test('dashboard health, sample, and upload use the configured backend and render
   assert.equal(calls[2].options.body.file, file);
   assert.equal(calls[3].options.method, 'POST');
   assert.equal(calls[3].options.body.file, invalidFile);
+});
+
+test('empty responses without optional Phase 4 fields render safely', async () => {
+  const {elements} = dashboard({
+    rows: [],
+    issues: [],
+    ingestion: {total_records: 0, accepted: 0, rejected: 0, deduplicated: 0, data_kind: 'user_supplied_unverified'}
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  await elements.get('bSample').listeners.click();
+  assert.equal(elements.get('mVisible').textContent, '0');
+  assert.equal(elements.get('timelineDensity').children.length, 0);
+  assert.equal(elements.get('mapEmptyState').hidden, false, 'empty datasets show the geospatial empty state');
+  assert.equal(elements.get('tlRange').disabled, true);
+  assert.equal(elements.get('weightsPanel').hidden, true);
+  assert.match(elements.get('evaluationContent').children[0].textContent, /No labelled evaluation/i);
+  assert.match(elements.get('eventContent').children[0].textContent, /No event records/i);
 });
