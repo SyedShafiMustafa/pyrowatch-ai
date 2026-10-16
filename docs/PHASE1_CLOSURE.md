@@ -1,5 +1,10 @@
 # Phase 1 closure evidence — 2026-10-16
 
+This report records the Phase 1 milestone as assessed on 2026-10-16. Its
+then-pending checks and findings below are historical; later status is called
+out explicitly and supported by the linked Phase 4.2 report. The later work does
+not establish wildfire classification accuracy.
+
 Functional acceptance: satisfied in the working environment. All 29 existing tests
 passed without exclusions; the API contract passed independently and in the module
 and full suite. Lint/formatting and genuine FIRMS validation remain unverified.
@@ -110,33 +115,34 @@ violations, nor is it a pass. No tool was installed to bypass the dependency con
 
 - Ruff lint and formatting analysis: unavailable until a permitted Ruff installation
   or an existing CI environment is supplied. Black also absent from .venv and PATH.
-- Real-data validation: **PENDING**. Only `data/sample/synthetic_sample.csv` exists;
-  no real FIRMS CSV or historical archive was found in the project data inventory.
+- At the Phase 1 milestone, real-data validation was **PENDING**: only the
+  synthetic sample was available in that checkout. This status was superseded
+  by the genuine NASA FIRMS compatibility work documented in
+  [Phase 4.2](PHASE4_2_FIRMS_VALIDATION.md). That later check validated a
+  provenance-documented VIIRS/Suomi NPP sample and regional subset for data and
+  pipeline compatibility; it did not evaluate labelled wildfire accuracy.
+- A historical archive was still not present at the Phase 1 milestone. The later
+  FIRMS validation also did not supply a historical recurrence archive.
 - Live FIRMS endpoint, key validity and actual upstream request logs: intentionally
   not exercised. No key was printed/read from .env; no real observation request made.
 - Browser rendering/security exploitation: not executed; static security review only.
 
 ## Remaining defects and proposed remediation
 
-1. **P2 / medium, unsafe HTML sinks:** frontend/app.js:6–7 inserts issue strings via
-   innerHTML; :16–18 interpolates fields including confidence_raw into table HTML.
-   Current ingestion errors are controlled strings, confidence is validated, and
-   no reachable upload-to-script exploit was established. Nevertheless these sinks
-   do not enforce text-only handling of untrusted responses. Use textContent/DOM
-   construction (or explicit escaping), and add hostile-input browser tests in an
-   approved security change. Frontend left untouched as requested.
-2. **P2 / medium, potential credential disclosure under verbose dependency logging:**
-   backend/app/firms_client.py:27–29 places the key in the upstream URL, as required by
-   FIRMS. Application exceptions suppress request exception text and chained context;
-   the mocked secret-redaction test passed. However urllib3/connectionpool.py:550–556
-   logs request URL at DEBUG, and retry logs also contain URL. There is no application
-   log-redaction mechanism. Default observed local logs are clean, but “never leaks
-   in logs” cannot be guaranteed for debug logging. Add tested key redaction at the
-   outbound logging boundary before enabling verbose upstream HTTP diagnostics.
-   This is source-inspection evidence, not an observed live credential leak.
-3. **P2 / medium, incorrect displayed rejection count:** frontend/app.js:7 uses
-   issues.length; duplicates and schema-level issues inflate the count. Read the
-   ingestion accepted/rejected/deduplicated counts separately in approved UI work.
+1. **Historical frontend security finding — superseded:** the Phase 1 review
+   identified possible unsafe HTML sinks in the then-current frontend. The current
+   `frontend/app.js` uses `textContent` and DOM construction for API-provided text;
+   the old `innerHTML` line references do not describe the current implementation.
+   Static inspection is not a browser security test, and no broader exploitability
+   claim is made here.
+2. **Historical credential logging finding — addressed later:** the Phase 1 review
+   noted that upstream HTTP DEBUG records could include a FIRMS key. The current
+   implementation has synthetic-sentinel redaction regression coverage in
+   `backend/tests/test_firms_logging.py`; live FIRMS requests and real credentials
+   were not used to establish that result.
+3. **Historical rejection-count finding — addressed later:** the current frontend
+   reads `ingestion.rejected` separately from duplicate and schema issue counts.
+   Frontend count regression coverage is in `frontend/tests/counts.test.cjs`.
 4. **P3 / low, test client deprecation:** backend/tests/test_ingestion.py:6 imports
    TestClient which warns about httpx under installed Starlette. Plan a compatible
    dependency review separately; current tests pass and dependencies were preserved.
@@ -157,8 +163,10 @@ both paths ignored. `git ls-files` was empty; no secrets or environments are sta
 Final status/diffs and both added files were reread; empty git diffs alone do not
 establish preservation because the repository has no commits.
 
-## Next milestone
+## Next milestone at the Phase 1 close
 
-Run the same ingestion/accounting checks on a genuine, provenance-documented FIRMS
-CSV supplied by the user. Keep this pending until real input is available; do not
-substitute synthetic data. Obtain approval before further work or Phase 2.
+The next milestone was genuine, provenance-documented FIRMS CSV compatibility.
+That milestone was completed later as described in [Phase 4.2](PHASE4_2_FIRMS_VALIDATION.md).
+Labelled wildfire accuracy, live FIRMS service/key verification, and browser
+rendering/security testing remain separate checks and are not established by that
+data-compatibility result.

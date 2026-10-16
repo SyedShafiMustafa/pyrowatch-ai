@@ -1,5 +1,6 @@
 from pathlib import Path
 import io
+import os
 import pandas as pd
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +16,85 @@ from .trends import analyze_trend
 from .anomaly import predict_events
 
 ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+def _configured_max_upload_bytes():
+    raw = os.environ.get("PYROWATCH_MAX_UPLOAD_BYTES", str(DEFAULT_MAX_UPLOAD_BYTES))
+    try:
+        limit = int(raw)
+    except ValueError:
+        raise ValueError("PYROWATCH_MAX_UPLOAD_BYTES must be a positive integer") from None
+    if limit <= 0:
+        raise ValueError("PYROWATCH_MAX_UPLOAD_BYTES must be a positive integer")
+    return limit
+
+
+MAX_UPLOAD_BYTES = _configured_max_upload_bytes()
+
+
+class UploadSizeLimitMiddleware:
+    """Bound upload request bytes while multipart parsing streams the body."""
+
+    def __init__(self, app, max_bytes=MAX_UPLOAD_BYTES):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if (scope["type"] != "http" or scope.get("method") != "POST"
+                or scope.get("path") != "/api/upload"):
+            return await self.app(scope, receive, send)
+
+        headers = dict(scope.get("headers", ()))
+        try:
+            content_length = int(headers.get(b"content-length", b""))
+        except ValueError:
+            content_length = None
+        if content_length is not None and content_length > self.max_bytes:
+            return await self._too_large(send)
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _UploadTooLarge
+            return message
+
+        response_started = False
+
+        async def tracked_send(message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except _UploadTooLarge:
+            if response_started:
+                raise
+            await self._too_large(send)
+
+    async def _too_large(self, send):
+        body = (f'{{"detail":"Upload request exceeds the {self.max_bytes}-byte limit"}}'
+                .encode("ascii"))
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode("ascii"))]})
+        await send({"type": "http.response.body", "body": body})
+
+
+class _UploadTooLarge(Exception):
+    pass
+
+
 app = FastAPI(title="Fire detection triage", description="Decision support for review only. Not an emergency-response system.")
+# Register the limiter inside CORS so browser uploads receive CORS headers on 413.
+app.add_middleware(UploadSizeLimitMiddleware, max_bytes=MAX_UPLOAD_BYTES)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

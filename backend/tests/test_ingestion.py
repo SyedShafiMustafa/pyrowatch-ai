@@ -95,6 +95,84 @@ def test_upload_and_sample_contract():
         assert client.post('/api/upload', files={'file': ('bad.csv', b'\xff')}).status_code == 400
 
 
+def _multipart_file_body(payload, boundary='pyrowatch-boundary'):
+    return (f'--{boundary}\r\n'
+            'Content-Disposition: form-data; name="file"; filename="synthetic.csv"\r\n'
+            'Content-Type: text/csv\r\n\r\n').encode() + payload + (
+                f'\r\n--{boundary}--\r\n'.encode())
+
+
+def _installed_upload_limiter(app, limiter_type):
+    layer = app.middleware_stack
+    while not isinstance(layer, limiter_type):
+        layer = getattr(layer, 'app', None)
+        if layer is None:
+            raise AssertionError('upload limiter is missing from the FastAPI middleware stack')
+    return layer
+
+
+def test_upload_limit_accepts_exact_request_body_boundary():
+    from app.main import UploadSizeLimitMiddleware, app
+
+    body = _multipart_file_body((HEAD + ROW).encode())
+    with TestClient(app) as client:
+        limiter = _installed_upload_limiter(app, UploadSizeLimitMiddleware)
+        original_limit = limiter.max_bytes
+        limiter.max_bytes = len(body)
+        try:
+            response = client.post('/api/upload', content=body, headers={
+                'Content-Type': 'multipart/form-data; boundary=pyrowatch-boundary'})
+        finally:
+            limiter.max_bytes = original_limit
+    assert response.status_code == 200
+    assert response.json()['ingestion']['accepted'] == 1
+
+
+def test_upload_limit_rejects_request_one_byte_over_boundary():
+    from app.main import UploadSizeLimitMiddleware, app
+
+    body = _multipart_file_body((HEAD + ROW).encode())
+    with TestClient(app) as client:
+        limiter = _installed_upload_limiter(app, UploadSizeLimitMiddleware)
+        original_limit = limiter.max_bytes
+        limiter.max_bytes = len(body) - 1
+        try:
+            response = client.post('/api/upload', content=body, headers={
+                'Content-Type': 'multipart/form-data; boundary=pyrowatch-boundary',
+                'Origin': 'http://127.0.0.1:5500'})
+        finally:
+            limiter.max_bytes = original_limit
+    assert response.status_code == 413
+    assert response.json() == {
+        'detail': f'Upload request exceeds the {len(body) - 1}-byte limit'}
+    assert response.headers['access-control-allow-origin'] == 'http://127.0.0.1:5500'
+
+
+def test_upload_limit_bounds_streamed_body_without_content_length():
+    import asyncio
+    from app.main import UploadSizeLimitMiddleware
+
+    received_by_app = []
+
+    async def downstream(scope, receive, send):
+        received_by_app.append(await receive())
+
+    messages = iter([{"type": "http.request", "body": b"123456", "more_body": False}])
+    responses = []
+
+    async def receive():
+        return next(messages)
+
+    async def send(message):
+        responses.append(message)
+
+    scope = {"type": "http", "method": "POST", "path": "/api/upload", "headers": []}
+    asyncio.run(UploadSizeLimitMiddleware(downstream, max_bytes=5)(scope, receive, send))
+
+    assert received_by_app == []
+    assert responses[0]["status"] == 413
+
+
 def test_firms_http_mock_and_secret_redaction(monkeypatch):
     monkeypatch.setenv('MAP_KEY', 'synthetic-test-key')
     get = Mock(return_value=Mock(status_code=200, text=HEAD + ROW))

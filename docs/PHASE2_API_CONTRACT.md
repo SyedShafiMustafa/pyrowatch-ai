@@ -17,6 +17,16 @@ CSV schema/row errors are returned in a successful 200 pipeline response. Empty 
 unsupported-schema uploads have no scored rows and include `issues` and `ingestion`.
 The API does not expose a scoring-weight request parameter; `weights` reports defaults.
 
+Uploads are limited to 10 MiB by default, measured across the complete multipart
+request body (including multipart headers and framing). Configure the process
+environment variable `PYROWATCH_MAX_UPLOAD_BYTES` to a positive integer number of
+bytes before starting the app. Requests above the limit receive HTTP 413 with a
+`detail` message; the limit checks `Content-Length` before multipart parsing and
+also counts streamed request bytes when that header is absent. Reverse proxies and
+ASGI servers should enforce a compatible or lower body limit as well, since they
+may buffer request data before it reaches this application. The multipart overhead
+means the maximum CSV file itself is slightly smaller than the request-body limit.
+
 ## Pipeline response
 
 | Field | Type | Presence and meaning |
