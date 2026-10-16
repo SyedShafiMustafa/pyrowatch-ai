@@ -59,6 +59,16 @@ def main():
             assert [r['line'] for r in report['outcomes']] == [2, 3, 4]
             assert len(result['rows']) == 1 and result['rows'][0]['repeat_count'] == 0
             print(json.dumps({'endpoint': '/api/upload', 'status': upload.status_code, 'keys': sorted(result), 'ingestion': report}))
+            nonfinite = session.post(base + '/api/upload', files={
+                'file': ('synthetic_nonfinite.csv', header + row + row.replace(',340,', ',NaN,'), 'text/csv')}, timeout=15)
+            nonfinite_data = nonfinite.json()
+            assert nonfinite.status_code == 200
+            assert nonfinite_data['ingestion']['accepted'] == 1 and nonfinite_data['ingestion']['rejected'] == 1
+            assert len(nonfinite_data['rows']) == 1
+            json.dumps(nonfinite_data, allow_nan=False)
+            print(json.dumps({'case': 'one_nonfinite_brightness_record', 'status': nonfinite.status_code,
+                              'accepted': nonfinite_data['ingestion']['accepted'],
+                              'rejected': nonfinite_data['ingestion']['rejected']}))
             schema = session.post(base + '/api/upload', files={'file': ('synthetic_bad_schema.csv', 'latitude,latitude\n1,2\n', 'text/csv')}, timeout=15)
             result = schema.json()
             assert schema.status_code == 200 and result['ingestion']['total_records'] == 1

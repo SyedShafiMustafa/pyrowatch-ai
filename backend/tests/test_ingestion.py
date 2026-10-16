@@ -17,6 +17,12 @@ def test_nonfinite_or_missing_frp(value):
     assert clean.empty and len(issues) == 1
 
 
+@pytest.mark.parametrize('value', ['NaN', 'inf', '-inf'])
+def test_nonfinite_brightness_is_rejected(value):
+    clean, issues = load_csv_text(HEAD + ROW.replace(',340,', f',{value},'))
+    assert clean.empty and len(issues) == 1
+
+
 @pytest.mark.parametrize('value', ['2360', '2400', '12.5', '-1', '12345', 'nan', ''])
 def test_invalid_clock(value):
     assert load_csv_text(HEAD + ROW.replace(',230,', f',{value},'))[0].empty
@@ -72,7 +78,15 @@ def test_upload_and_sample_contract():
         assert data['ingestion']['deduplicated'] == 1
         assert data['rows'][0]['repeat_count'] == 0
         assert data['rows'][0]['label'] is None
+        assert data['rows'][0]['score_missing_factors'] == []
+        assert data['rows'][0]['score'] == pytest.approx(sum(data['rows'][0][f'c_{name}'] for name in ('recency', 'confidence', 'frp', 'repeats', 'brightness')))
         json.dumps(data, allow_nan=False)
+        mixed = client.post('/api/upload', files={'file': ('synthetic_mixed.csv', HEAD + ROW + ROW.replace(',340,', ',NaN,'), 'text/csv')})
+        assert mixed.status_code == 200
+        mixed_data = mixed.json()
+        assert mixed_data['ingestion']['accepted'] == 1 and mixed_data['ingestion']['rejected'] == 1
+        assert len(mixed_data['rows']) == 1
+        json.dumps(mixed_data, allow_nan=False)
         sample = client.get('/api/sample')
         assert sample.status_code == 200 and sample.json()['ingestion']['data_kind'] == 'synthetic'
         assert sample.json()['evaluation']['n_labelled'] >= 20

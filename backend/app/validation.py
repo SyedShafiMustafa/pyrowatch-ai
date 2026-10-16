@@ -50,7 +50,8 @@ def validate(df: pd.DataFrame):
             errs.append("FRP missing"); frp = None
         try:
             bt = float(r["bright_ti4"])
-            if not 200 <= bt <= 500: errs.append("brightness implausible")
+            if not math.isfinite(bt) or not 200 <= bt <= 500:
+                errs.append("brightness implausible")
         except (TypeError, ValueError):
             errs.append("brightness missing"); bt = None
         raw_time = str(r["acq_time"]).strip()

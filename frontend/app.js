@@ -3,8 +3,12 @@ L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {attribution: "&co
 let layer = L.layerGroup().addTo(map), markers = {};
 
 function show(data) {
+  const counts = data.ingestion;
+  const summary = counts
+    ? `${counts.accepted} valid, ${counts.rejected} rejected, ${counts.deduplicated} duplicates`
+    : `${data.rows.length} valid, ${data.issues.length} issues`;
   document.getElementById("issues").innerHTML =
-    `<p>${data.rows.length} valid, ${data.issues.length} rejected</p>` + data.issues.map(i => `<div>• ${i}</div>`).join("");
+    `<p>${summary}</p>` + data.issues.map(i => `<div>• ${i}</div>`).join("");
   layer.clearLayers(); markers = {};
   data.rows.forEach((r, i) => {
     const m = L.circleMarker([r.latitude, r.longitude], {

@@ -25,7 +25,7 @@ def _pipeline(text: str, data_kind="user_supplied_unverified"):
     archive = load_csv_text(archive_path.read_text())[0] if archive_path.exists() else None
     scored = flag_static(scored, archive)
     scored["why"] = scored.apply(explain, axis=1)
-    rows = scored.drop(columns=["cell"]).assign(time=lambda x: x["time"].astype(str))
+    rows = scored.drop(columns=["cell"], errors="ignore").assign(time=lambda x: x["time"].astype(str))
     events = events.assign(first_seen=events["first_seen"].astype(str), last_seen=events["last_seen"].astype(str))
     labelled = scored["label"].notna().sum() >= 20
     return {"issues": issues, "weights": DEFAULT_WEIGHTS, "ingestion": ingestion,

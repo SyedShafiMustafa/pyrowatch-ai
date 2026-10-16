@@ -30,4 +30,4 @@ is not loaded automatically). Never commit credentials.
 FIRMS download https://firms.modaps.eosdis.nasa.gov/active_fire | API https://firms.modaps.eosdis.nasa.gov/web-services/ | Worldview https://worldview.earthdata.nasa.gov/
 
 ## Score
-0-100 weighted mean of recency, confidence, FRP (log vs P95), repeats (~2 km, 72 h), brightness. Weights are judgement, not learned. See `docs/LIMITATIONS.md`.
+0-100 weighted heuristic of recency, confidence, FRP, repeats, and brightness. Weights are analyst choices, not learned or calibrated. See [docs/SCORING.md](docs/SCORING.md) for the formula and [docs/PHASE2_API_CONTRACT.md](docs/PHASE2_API_CONTRACT.md) for verified API behavior; see `docs/LIMITATIONS.md` for interpretation limits.
