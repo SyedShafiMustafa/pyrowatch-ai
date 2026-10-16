@@ -47,6 +47,7 @@ def test_raw_fields_and_multiline():
     row = ROW.rstrip() + ',2,VIIRS,"synthetic\nrecord"\n'
     clean, _, report = inspect_csv_text(header + row)
     assert clean.iloc[0].source_fields['type'] == '2'
+    assert clean.iloc[0].instrument == 'VIIRS'
     assert report['outcomes'][0]['end_line'] == 3
 
 
@@ -54,6 +55,7 @@ def test_confidence_and_modis():
     assert normalise_confidence('hello') is None
     clean, issues = load_csv_text(HEAD.replace('bright_ti4', 'brightness') + ROW.replace(',h,', ',85,'))
     assert not issues and clean.iloc[0].confidence == .85
+    assert clean.iloc[0].instrument is None
 
 
 @pytest.mark.parametrize('text', ['', 'latitude,latitude\n1,2\n', HEAD + '"unterminated\n', HEAD + ROW.rstrip() + ',extra\n'])

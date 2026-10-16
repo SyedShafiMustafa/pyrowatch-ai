@@ -1,22 +1,33 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fire detection triage</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="style.css"></head><body>
-<header><h1>Fire detection triage</h1>
-<p class="banner">Decision support for review only. Detections are not confirmed fires. Not an emergency-response system.</p></header>
-<main>
- <section class="side">
-  <input type="file" id="file" accept=".csv">
-  <button id="bSample">Load synthetic sample</button>
-  <div id="issues"></div>
-  <!-- TODO(frontend): filters (confidence, FRP, time window, satellite, day/night), weight sliders, limitations panel, export CSV -->
- </section>
- <section class="content">
-  <div id="map"></div>
-  <table><thead><tr><th>#</th><th>Score</th><th>Why</th><th>Time (UTC)</th><th>Conf</th><th>FRP</th><th>Repeats</th><th>Event</th><th>Static?</th></tr></thead><tbody id="tb"></tbody></table>
-  <!-- TODO(frontend): events view (one row per cluster), evaluation panel, sparkline per event -->
- </section>
-</main>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js"></script></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fire Triage | Observation Review</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">FT</span><div><p class="eyebrow">FIELD INTELLIGENCE</p><h1>Fire Triage</h1></div></div><div class="connection"><i id="connectionDot" class="status-dot" aria-hidden="true"></i><span id="connectionStatus" role="status">Checking API…</span></div></header>
+  <main>
+    <section class="scope-warning" aria-label="Scope warning"><strong>Review support only</strong><p>Satellite thermal anomalies are unconfirmed observations. This dashboard prioritizes records for analyst review; it does not confirm fires or predict fire behavior.</p></section>
+    <section class="source-panel panel" aria-labelledby="sourceHeading"><div><p class="eyebrow">ACTIVE DATASET</p><h2 id="sourceHeading">Data source &amp; ingestion</h2><p id="provenance" class="provenance">No dataset loaded.</p><p id="datasetMessage" class="muted" role="status" aria-live="polite">Load the synthetic sample or upload a CSV to begin.</p></div><div class="source-actions"><button id="bSample" class="button primary" type="button">Load synthetic sample</button><label class="button secondary file-button" for="file">Choose CSV</label><input id="file" type="file" accept=".csv,text/csv" aria-describedby="fileHelp"><span id="fileHelp" class="help">UTF-8 CSV with required detection columns.</span></div><div class="ingestion-grid" id="ingestionSummary" aria-label="Ingestion summary"></div></section>
+    <section class="metrics" aria-label="Dataset summary"><article class="metric"><span>Total input records</span><strong id="mTotal">—</strong></article><article class="metric"><span>Accepted</span><strong id="mAccepted">—</strong></article><article class="metric"><span>Rejected</span><strong id="mRejected">—</strong></article><article class="metric"><span>Deduplicated</span><strong id="mDuplicates">—</strong></article><article class="metric"><span>Events supplied</span><strong id="mEvents">—</strong></article><article class="metric"><span>Visible observations</span><strong id="mVisible">—</strong></article></section>
+    <div class="workspace-grid">
+      <aside class="filter-panel panel" aria-labelledby="filterHeading"><div class="section-heading"><div><p class="eyebrow">EXPLORE</p><h2 id="filterHeading">Search &amp; filters</h2></div><button type="button" id="resetFilters" class="text-button">Reset</button></div>
+        <label for="search">Search observations</label><input id="search" type="search" placeholder="Time, satellite, event, explanation…">
+        <label for="confidenceMin">Minimum normalized confidence <output id="confidenceValue">0.00</output></label><input id="confidenceMin" type="range" min="0" max="1" step="0.05" value="0"><small>Uses the normalized value returned by the API.</small>
+        <label for="frpMin">Minimum FRP value</label><input id="frpMin" type="number" min="0" step="any" placeholder="No minimum"><small>API unit metadata is unavailable; values are shown as received.</small>
+        <div class="two-inputs"><div><label for="fromDate">From date (UTC)</label><input id="fromDate" type="date"></div><div><label for="toDate">To date (UTC)</label><input id="toDate" type="date"></div></div>
+        <label for="satelliteFilter">Satellite / instrument</label><select id="satelliteFilter"><option value="">All available</option></select>
+        <label for="daynightFilter">Day / night</label><select id="daynightFilter"><option value="">All available</option><option value="day">Day (D / day)</option><option value="night">Night (N / night)</option><option value="unknown">Unavailable / other</option></select>
+        <label class="check-label"><input id="staticOnly" type="checkbox"> Possible static source only</label>
+        <label for="eventFilter">Event</label><select id="eventFilter"><option value="">All events</option></select>
+        <label for="sortBy">Sort observations</label><select id="sortBy"><option value="score">Review priority (high to low)</option><option value="time">Timestamp (newest first)</option><option value="frp">FRP value (high to low)</option><option value="confidence">Normalized confidence (high to low)</option><option value="satellite">Satellite (A to Z)</option></select>
+      </aside>
+      <section class="main-column"><section class="panel map-panel" aria-labelledby="mapHeading"><div class="section-heading"><div><p class="eyebrow">GEOGRAPHIC CONTEXT</p><h2 id="mapHeading">Observation map</h2></div><span class="map-legend"><i aria-hidden="true"></i> Score maps to review-priority color (0–100)</span></div><div id="mapFallback" class="map-fallback" role="status">Map is initializing. The table remains available.</div><div id="map" role="img" aria-label="Map of filtered satellite observations"></div><p class="map-note">Basemap tiles use OpenStreetMap over the internet. Scores are review-priority values, not fire probabilities.</p></section>
+        <section class="panel table-panel" aria-labelledby="tableHeading"><div class="section-heading table-title"><div><p class="eyebrow">RANKED RECORDS</p><h2 id="tableHeading">Observations</h2><p id="resultCount" class="muted">No observations loaded.</p></div><button id="exportCsv" class="button secondary" type="button" disabled>Export matching CSV</button></div><div id="emptyState" class="empty-state" hidden><strong id="emptyTitle">No observations to display.</strong><p id="emptyText">Load a dataset or adjust filters.</p><button type="button" id="clearFromEmpty" class="button secondary" hidden>Clear filters</button></div><div class="table-scroll" id="tableWrap"><table><caption class="sr-only">Satellite thermal anomaly observations matching active filters</caption><thead><tr><th scope="col">Priority</th><th scope="col">Timestamp (UTC)</th><th scope="col">Confidence</th><th scope="col">FRP*</th><th scope="col">Satellite</th><th scope="col">Event</th><th scope="col">Static source</th></tr></thead><tbody id="tb"></tbody></table></div><div class="pagination"><span id="pageInfo">—</span><button id="showMore" type="button" class="button secondary" hidden>Show more</button></div><p class="help">*FRP units are not specified in the API response.</p></section></section>
+      <aside class="details-column"><section class="panel" aria-labelledby="detailHeading"><p class="eyebrow">RECORD REVIEW</p><h2 id="detailHeading">Selected observation</h2><div id="detailContent" class="detail-content"><p class="muted">Select a table row or marker.</p></div></section><section class="panel" aria-labelledby="scoreHeading"><p class="eyebrow">EXPLAINABILITY</p><h2 id="scoreHeading">Score explanation</h2><div id="scoreContent"><p class="muted">Backend explanation appears here when a record is selected.</p></div><p class="help">Score is a review priority, not probability of fire or fire-danger rating.</p></section><section class="panel" aria-labelledby="eventsHeading"><p class="eyebrow">GROUPING</p><h2 id="eventsHeading">Events</h2><div id="eventContent"><p class="muted">Event information unavailable until a dataset is loaded.</p></div></section><section class="panel" aria-labelledby="evaluationHeading"><p class="eyebrow">MODEL EVALUATION</p><h2 id="evaluationHeading">Evaluation availability</h2><div id="evaluationContent"><p class="muted">Evaluation results unavailable from the current API.</p></div></section><section class="panel limitations"><p class="eyebrow">CAPABILITIES</p><h2>Review notes &amp; limitations</h2><p>Review-note persistence and server-side filtering are unsupported by the current API. Filters and exports apply in this browser to records returned by the API.</p></section></aside>
+    </div><div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
+  </main>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script><script src="app.js"></script>
+</body></html>

@@ -87,6 +87,9 @@ def validate(df: pd.DataFrame):
                      "brightness": bt, "confidence_raw": str(r["confidence"]),
                      "confidence": conf,
                      "satellite": str(r.get("satellite", "?")),
+                     "instrument": (str(r["instrument"]) if "instrument" in r
+                                    and pd.notna(r["instrument"]) and str(r["instrument"]).strip()
+                                    else None),
                      "daynight": str(r.get("daynight", "")),
                      "label": label, "source_line": line,
                      "source_fields": {k: (None if pd.isna(v) else str(v)) for k, v in r.items() if k != "_source_line"}})
