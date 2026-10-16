@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fire detection triage</title>
+<style>
+:root{--bg:#f3f5f2;--fg:#1c2420;--mut:#5d6a63;--card:#fff;--bd:#d5dcd6;--ac:#1f6f5c;--warn:#a15c00;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121815;--fg:#e4ebe6;--mut:#92a199;--card:#1a221e;--bd:#2f3b35;--ac:#4fc3a1;--warn:#e0a040}}
+:root[data-theme="dark"]{--bg:#121815;--fg:#e4ebe6;--mut:#92a199;--card:#1a221e;--bd:#2f3b35;--ac:#4fc3a1;--warn:#e0a040}
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 "Source Sans 3",system-ui,sans-serif}
+main{max-width:1180px;margin:0 auto;padding:20px 16px 48px}
+h1{font:600 26px/1.2 Georgia,serif;margin:0 0 4px}h2{font:600 16px Georgia,serif;margin:0 0 8px}
+.sub{color:var(--mut);margin:0 0 14px;max-width:70ch}
+.banner{border:1px solid var(--warn);color:var(--warn);padding:8px 12px;border-radius:6px;margin-bottom:14px;font-size:14px}
+.grid{display:grid;grid-template-columns:300px 1fr;gap:14px}
+@media(max-width:860px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:14px;margin-bottom:14px}
+label{display:block;font-size:13px;color:var(--mut);margin-top:8px}
+select,input[type=number],textarea,button{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:5px 8px;width:100%}
+input[type=range]{width:100%}
+button{cursor:pointer;width:auto;background:var(--ac);color:#fff;border:0;padding:6px 12px;margin:6px 6px 0 0}
+button.alt{background:transparent;color:var(--fg);border:1px solid var(--bd)}
+.wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:5px 8px;border-bottom:1px solid var(--bd);text-align:left;white-space:nowrap}
+tr.r{cursor:pointer}tr.r:hover,tr.sel{background:color-mix(in srgb,var(--ac) 14%,transparent)}
+.bar{display:flex;height:10px;border-radius:3px;overflow:hidden;min-width:120px;background:var(--bd)}
+.bar i{display:block}
+svg{width:100%;height:auto;background:var(--bg);border:1px solid var(--bd);border-radius:6px}
+.mut{color:var(--mut);font-size:13px}.pill{display:inline-block;padding:0 6px;border-radius:9px;border:1px solid var(--bd);font-size:12px;margin-right:4px}
+.lg span{display:inline-block;margin-right:10px;font-size:12px}.lg b{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px}
+:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+</style></head><body><main>
+<h1>Fire detection triage</h1>
+<p class="sub">Imports satellite active-fire detections (NASA FIRMS CSV format), validates them, and ranks them with an explainable score so an analyst knows what to look at first.</p>
+<div class="banner">Decision-support for review only. Detections are not confirmed fires and this is not an emergency-response system. Currently loaded: <b id="src"></b></div>
+<div class="grid"><aside>
+ <div class="card"><h2>Data</h2>
+  <input type="file" id="file" accept=".csv,text/csv" aria-label="Upload CSV">
+  <button id="bSyn" class="alt">Load labelled synthetic sample</button>
+  <p class="mut">Expects FIRMS columns: latitude, longitude, bright_ti4 (or brightness), acq_date, acq_time, satellite, confidence, frp, daynight. An optional <code>label</code> column (1 = real fire, 0 = not) enables the evaluation.</p>
+  <div id="val" class="mut"></div></div>
+ <div class="card"><h2>Filters</h2>
+  <label>Minimum confidence<select id="fConf"><option value="0">Any</option><option value="0.5">Nominal or higher</option><option value="0.8">High only</option></select></label>
+  <label>Minimum FRP (MW): <b id="vF">0</b><input type="range" id="fFrp" min="0" max="50" value="0"></label>
+  <label>Last N hours before newest detection: <b id="vT">96</b><input type="range" id="fT" min="6" max="240" value="96"></label>
+  <label>Satellite<select id="fSat"></select></label>
+  <label>Day / night<select id="fDn"><option value="">Both</option><option>D</option><option>N</option></select></label></div>
+ <div class="card"><h2>Score weights</h2><div id="ws"></div>
+  <label>Recency half-life (h): <b id="vH">24</b><input type="range" id="hl" min="6" max="72" value="24"></label>
+  <button id="bRst" class="alt">Reset</button></div>
+</aside><section>
+ <div class="card"><h2>Map (detections plotted by coordinates, no basemap)</h2><svg id="map" viewBox="0 0 700 380" role="img" aria-label="Scatter map of detections"></svg>
+  <div class="lg mut"><span><b style="background:hsl(55,90%,55%)"></b>lower score</span><span><b style="background:hsl(0,85%,50%)"></b>higher score</span><span>Circle size = FRP</span></div></div>
+ <div class="card"><h2>Priority list <span id="cnt" class="mut"></span></h2>
+  <div id="detail" class="mut" style="margin-bottom:8px">Select a row or point to see why it ranked where it did.</div>
+  <div class="wrap"><table><thead><tr><th>#</th><th>Score</th><th>Why (contribution)</th><th>Time (UTC)</th><th>Lat, Lon</th><th>Conf</th><th>FRP</th><th>Repeats</th><th>Sat</th></tr></thead><tbody id="tb"></tbody></table></div>
+  <button id="bExp">Export ranked CSV</button></div>
+ <div class="card"><h2>Evaluation on labelled sample</h2><div id="ev" class="mut"></div></div>
+ <div class="card"><h2>How the score works, and where it fails</h2>
+  <p>Score = weighted average (0–100) of five factors, each scaled 0–1: <b>recency</b> (exponential decay from the newest detection), <b>confidence</b> (low 0.2, nominal 0.6, high 1.0, or numeric/100), <b>FRP</b> (log-scaled against the dataset's 95th percentile), <b>repeat detections</b> (other detections within ~2 km in 72 h, capped at 4), and <b>brightness</b> (300–400 K).</p>
+  <ul class="mut"><li>Persistent heat sources such as industry, flares or volcanoes score high on repeats. The sample includes two such sites so you can see this.</li>
+  <li>Cloud, smoke and viewing angle hide fires; absence of detections is not absence of fire.</li>
+  <li>Pixels are 375 m to 1 km, so coordinates are approximate. Confidence labels differ between instruments.</li>
+  <li>Weights are judgement calls, not fitted. Evaluation on a tiny synthetic sample shows the pipeline works; it makes no claim of real-world accuracy.</li></ul></div>
+</section></div></main>
+<script>
+const $=s=>document.querySelector(s),W0={rec:.25,conf:.2,frp:.25,rep:.2,bt:.1},NM={rec:"Recency",conf:"Confidence",frp:"FRP",rep:"Repeats",bt:"Brightness"},COL={rec:"#3b82c4",conf:"#7a5cc7",frp:"#d9642b",rep:"#c9a227",bt:"#2a9d8f"};
+let W={...W0},rows=[],all=[],sel=null,srcName="";
+function rng(s){return()=>(s=(s*1664525+1013904223)>>>0)/4294967296}
+function synth(){const r=rng(11),o=["latitude,longitude,bright_ti4,acq_date,acq_time,satellite,confidence,frp,daynight,label"],b=Date.UTC(2026,9,10),pr=n=>String(n).padStart(2,"0");
+ const add=(la,lo,bt,t,sat,c,f,l)=>{const d=new Date(t);o.push([la.toFixed(4),lo.toFixed(4),bt.toFixed(1),d.toISOString().slice(0,10),pr(d.getUTCHours())+pr(d.getUTCMinutes()),sat,c,f.toFixed(1),d.getUTCHours()>=10&&d.getUTCHours()<22?"N":"D",l].join(","))};
+ [[-33,150.2,3],[-33.6,150.9,2],[-32.4,149.7,1.5]].forEach(([la,lo,k])=>{for(let d=0;d<4;d++)for(const h of[2,13])for(let i=0;i<Math.ceil(3*k);i++)add(la+d*.012+(r()-.5)*.03,lo+d*.01+(r()-.5)*.03,335+r()*50,b+d*864e5+h*36e5+r()*36e5,r()<.5?"N20":"N21",r()<.6?"h":"n",8+r()*55*k,1)});
+ for(let i=0;i<40;i++)add(-34+r()*2,149.5+r()*1.5,300+r()*25,b+r()*4*864e5,"Suomi NPP",r()<.7?"l":"n",.5+r()*3.5,0);
+ [[-33.3,150.55],[-32.8,150.1]].forEach(([la,lo])=>{for(let i=0;i<8;i++)add(la+(r()-.5)*.004,lo+(r()-.5)*.004,328+r()*6,b+(i%4)*864e5+(i<4?2:13)*36e5,"N20","n",3+r()*3,0)});
+ o.push("123.4,150.1,340,2026-10-11,0230,N20,h,20,D,0","-33.1,150.2,340,11/10/2026,0230,N20,h,20,D,0","-33.1,150.2,340,2026-10-11,0230,N20,h,-5,D,0");
+ return o.join("\n")}
+function parse(txt,name){srcName=name;const L=txt.trim().split(/\r?\n/),H=L[0].toLowerCase().split(",").map(s=>s.trim()),ix=k=>H.indexOf(k);
+ const need=["latitude","longitude","acq_date","acq_time","confidence","frp"],miss=need.filter(k=>ix(k)<0);
+ if(ix("bright_ti4")<0&&ix("brightness")<0)miss.push("bright_ti4/brightness");
+ const bad=[];rows=[];if(miss.length){$("#val").innerHTML="<b style='color:var(--warn)'>Missing columns: "+miss.join(", ")+"</b>";all=[];render();return}
+ L.slice(1).forEach((ln,i)=>{if(!ln.trim())return;const c=ln.split(",").map(s=>s.trim()),g=k=>c[ix(k)],e=[];
+  const la=+g("latitude"),lo=+g("longitude"),fr=+g("frp"),bt=+(g("bright_ti4")??g("brightness")),ds=g("acq_date"),tm=(g("acq_time")||"").padStart(4,"0");
+  if(!(la>=-90&&la<=90))e.push("latitude out of range");if(!(lo>=-180&&lo<=180))e.push("longitude out of range");
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(ds)||!/^([01]\d|2[0-3])[0-5]\d$/.test(tm))e.push("bad date/time");
+  if(!(fr>=0))e.push("FRP missing or negative");if(!(bt>=200&&bt<=500))e.push("brightness implausible");
+  let cf=(g("confidence")||"").toLowerCase(),cn=cf[0]=="l"?.2:cf[0]=="n"?.6:cf[0]=="h"?1:+cf/100;if(!(cn>=0&&cn<=1))e.push("confidence not l/n/h or 0–100");
+  if(e.length){bad.push(`line ${i+2}: ${e.join("; ")}`);return}
+  rows.push({id:rows.length+1,lat:la,lon:lo,t:Date.parse(ds+"T"+tm.slice(0,2)+":"+tm.slice(2)+":00Z"),cn,cl:g("confidence"),frp:fr,bt,sat:g("satellite")||"?",dn:g("daynight")||"",label:ix("label")>=0&&g("label")!==""?+g("label"):null})});
+ $("#val").innerHTML=`<b>${rows.length}</b> valid, <b>${bad.length}</b> rejected`+(bad.length?"<br>"+bad.map(x=>"• "+x).join("<br>"):"");
+ all=rows;const sats=[...new Set(rows.map(r=>r.sat))];$("#fSat").innerHTML="<option value=''>All</option>"+sats.map(s=>`<option>${s}</option>`).join("");sel=null;score();render()}
+function score(){if(!all.length)return;const ref=Math.max(...all.map(r=>r.t)),hl=+$("#hl").value,fs=all.map(r=>r.frp).sort((a,b)=>a-b),p95=fs[Math.floor(.95*(fs.length-1))]||1,cells={};
+ all.forEach(r=>{r.k=Math.round(r.lat/.02)+"_"+Math.round(r.lon/.02);(cells[r.k]=cells[r.k]||[]).push(r)});
+ all.forEach(r=>{const n=cells[r.k].filter(o=>o!==r&&Math.abs(o.t-r.t)<=72*36e5).length;r.rp=n;
+  r.f={rec:Math.pow(.5,(ref-r.t)/36e5/hl),conf:r.cn,frp:Math.min(1,Math.log1p(r.frp)/Math.log1p(p95)),rep:Math.min(1,n/4),bt:Math.max(0,Math.min(1,(r.bt-300)/100))};
+  const sw=Object.values(W).reduce((a,b)=>a+b,0)||1;r.c={};let s=0;for(const k in W){r.c[k]=100*W[k]*r.f[k]/sw;s+=r.c[k]}r.s=s});all.ref=ref}
+function filt(){const c=+$("#fConf").value,f=+$("#fFrp").value,t=+$("#fT").value,s=$("#fSat").value,d=$("#fDn").value;
+ return all.filter(r=>r.cn>=c&&r.frp>=f&&(all.ref-r.t)/36e5<=t&&(!s||r.sat==s)&&(!d||r.dn==d)).sort((a,b)=>b.s-a.s)}
+const bar=r=>`<div class="bar" title="${Object.keys(NM).map(k=>NM[k]+" "+r.c[k].toFixed(1)).join(", ")}">${Object.keys(NM).map(k=>`<i style="width:${r.c[k]}%;background:${COL[k]}"></i>`).join("")}</div>`;
+function render(){$("#src").textContent=srcName+(srcName.includes("synthetic")?" (synthetic, not real observations)":"");
+ $("#vF").textContent=$("#fFrp").value;$("#vT").textContent=$("#fT").value;$("#vH").textContent=$("#hl").value;
+ const f=filt();$("#cnt").textContent=`(${f.length} of ${all.length})`;
+ $("#tb").innerHTML=f.slice(0,60).map((r,i)=>`<tr class="r ${r===sel?"sel":""}" data-i="${r.id}"><td>${i+1}</td><td><b>${r.s.toFixed(0)}</b></td><td>${bar(r)}</td><td>${new Date(r.t).toISOString().slice(0,16).replace("T"," ")}</td><td>${r.lat.toFixed(3)}, ${r.lon.toFixed(3)}</td><td>${r.cl}</td><td>${r.frp.toFixed(1)}</td><td>${r.rp}</td><td>${r.sat}</td></tr>`).join("")||"<tr><td colspan=9>No detections match. Loosen the filters or load data.</td></tr>";
+ const m=$("#map");if(!f.length){m.innerHTML="";evalu();return}
+ const la=f.map(r=>r.lat),lo=f.map(r=>r.lon),a=Math.min(...la),b=Math.max(...la),c=Math.min(...lo),d=Math.max(...lo),px=(d-c||1)*.06,py=(b-a||1)*.06,x0=c-px,x1=d+px,y0=a-py,y1=b+py;
+ const X=v=>20+(v-x0)/(x1-x0)*660,Y=v=>360-(v-y0)/(y1-y0)*340;
+ m.innerHTML=`<text x="22" y="372" font-size="10" fill="currentColor">lon ${x0.toFixed(2)} to ${x1.toFixed(2)}, lat ${y0.toFixed(2)} to ${y1.toFixed(2)}</text>`+[...f].reverse().map(r=>`<circle data-i="${r.id}" cx="${X(r.lon).toFixed(1)}" cy="${Y(r.lat).toFixed(1)}" r="${(3+Math.sqrt(r.frp)*.9).toFixed(1)}" fill="hsl(${55-r.s*.6},88%,52%)" fill-opacity=".75" stroke="${r===sel?"#fff":"#0006"}" stroke-width="${r===sel?3:.7}" style="cursor:pointer"><title>score ${r.s.toFixed(0)}, FRP ${r.frp.toFixed(1)}</title></circle>`).join("");
+ const dt=$("#detail");dt.innerHTML=sel?`<b>Score ${sel.s.toFixed(1)}</b> at ${sel.lat.toFixed(3)}, ${sel.lon.toFixed(3)}: `+Object.keys(NM).map(k=>`<span class="pill" style="border-color:${COL[k]}">${NM[k]} ${(sel.f[k]).toFixed(2)} → +${sel.c[k].toFixed(1)}</span>`).join(""):"Select a row or point to see why it ranked where it did.";
+ evalu()}
+function evalu(){const L=all.filter(r=>r.label!==null);if(L.length<20){$("#ev").textContent="Needs a label column (1 = real fire, 0 = not) in the loaded CSV.";return}
+ const prev=L.reduce((a,r)=>a+r.label,0)/L.length,pk=(fn,k)=>{const t=[...L].sort((a,b)=>fn(b)-fn(a)).slice(0,k);return t.reduce((a,r)=>a+r.label,0)/k};
+ const M=[["Triage score",r=>r.s],["FRP only",r=>r.frp],["Newest first",r=>r.t],["Confidence only",r=>r.cn+r.frp*1e-6]];
+ $("#ev").innerHTML=`<p>${L.length} labelled detections, ${(prev*100).toFixed(0)}% are labelled real fires, so random ordering would give about ${(prev*100).toFixed(0)}% precision. Evaluation ignores the filters.</p><div class="wrap"><table><tr><th>Ranking</th><th>Precision@10</th><th>Precision@25</th></tr>${M.map(([n,fn])=>`<tr><td>${n}</td><td>${(pk(fn,10)*100).toFixed(0)}%</td><td>${(pk(fn,25)*100).toFixed(0)}%</td></tr>`).join("")}</table></div><p>Labels here come from how the synthetic data was generated, so this checks that the pipeline behaves sensibly. It is not evidence of real-world accuracy. Try raising the Repeats weight to see persistent industrial sites climb the list.</p>`}
+$("#ws").innerHTML=Object.keys(NM).map(k=>`<label>${NM[k]}: <b id="w_${k}">${W[k]}</b><input type="range" min="0" max="1" step=".05" value="${W[k]}" data-w="${k}"></label>`).join("");
+document.addEventListener("input",e=>{const k=e.target.dataset.w;if(k){W[k]=+e.target.value;$("#w_"+k).textContent=W[k];score()}if(e.target.closest("aside"))render()});
+document.addEventListener("change",e=>{if(e.target.closest("aside"))render()});
+document.addEventListener("click",e=>{const t=e.target.closest("[data-i]");if(t){sel=all.find(r=>r.id==t.dataset.i);render()}});
+$("#bRst").onclick=()=>{W={...W0};$("#hl").value=24;document.querySelectorAll("[data-w]").forEach(i=>{i.value=W[i.dataset.w];$("#w_"+i.dataset.w).textContent=W[i.dataset.w]});score();render()};
+$("#bSyn").onclick=()=>parse(synth(),"synthetic sample");
+$("#file").onchange=e=>{const f=e.target.files[0];if(f)f.text().then(t=>parse(t,f.name))};
+$("#bExp").onclick=()=>{const f=filt(),h="rank,score,latitude,longitude,time_utc,confidence,frp,repeats,satellite,"+Object.keys(NM).join("_pts,")+"_pts\n",b=f.map((r,i)=>[i+1,r.s.toFixed(1),r.lat,r.lon,new Date(r.t).toISOString(),r.cl,r.frp,r.rp,r.sat,...Object.keys(NM).map(k=>r.c[k].toFixed(1))].join(",")).join("\n");
+ const u=URL.createObjectURL(new Blob([h+b],{type:"text/csv"})),a=document.createElement("a");a.href=u;a.download="ranked_detections.csv";a.click()};
+parse(synth(),"synthetic sample");
+</script></body></html>

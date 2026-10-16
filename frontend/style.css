@@ -1,0 +1,9 @@
+:root{--bg:#f3f5f2;--fg:#1c2420;--card:#fff;--bd:#d5dcd6;--warn:#a15c00}
+@media (prefers-color-scheme:dark){:root{--bg:#121815;--fg:#e4ebe6;--card:#1a221e;--bd:#2f3b35;--warn:#e0a040}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif}
+header,main{max-width:1200px;margin:0 auto;padding:12px 16px}
+.banner{border:1px solid var(--warn);color:var(--warn);padding:6px 10px;border-radius:6px;font-size:14px}
+main{display:grid;grid-template-columns:260px 1fr;gap:14px}@media(max-width:800px){main{grid-template-columns:1fr}}
+#map{height:380px;border-radius:8px;border:1px solid var(--bd);margin-bottom:12px}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:4px 6px;border-bottom:1px solid var(--bd);text-align:left}
+tr.r{cursor:pointer}tr.r:hover{background:rgba(31,111,92,.15)}

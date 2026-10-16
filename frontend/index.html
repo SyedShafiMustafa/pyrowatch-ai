@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fire detection triage</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css"></head><body>
+<header><h1>Fire detection triage</h1>
+<p class="banner">Decision support for review only. Detections are not confirmed fires. Not an emergency-response system.</p></header>
+<main>
+ <section class="side">
+  <input type="file" id="file" accept=".csv">
+  <button id="bSample">Load synthetic sample</button>
+  <div id="issues"></div>
+  <!-- TODO(frontend): filters (confidence, FRP, time window, satellite, day/night), weight sliders, limitations panel, export CSV -->
+ </section>
+ <section class="content">
+  <div id="map"></div>
+  <table><thead><tr><th>#</th><th>Score</th><th>Why</th><th>Time (UTC)</th><th>Conf</th><th>FRP</th><th>Repeats</th><th>Event</th><th>Static?</th></tr></thead><tbody id="tb"></tbody></table>
+  <!-- TODO(frontend): events view (one row per cluster), evaluation panel, sparkline per event -->
+ </section>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script></body></html>
