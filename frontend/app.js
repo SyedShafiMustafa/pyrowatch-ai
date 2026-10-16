@@ -2,7 +2,7 @@
   "use strict";
   const API_BASE_URL="http://127.0.0.1:8010";
   const PAGE=50, $=id=>document.getElementById(id);
-  const state={dataset:[],issues:[],ingestion:null,provenance:"unknown",events:[],intelligence:{model:null,events:[]},evaluation:null,weights:null,search:"",filters:{confidenceMin:0,frpMin:null,fromDate:"",toDate:"",satellite:"",daynight:"",staticOnly:false,event:""},sort:"score",limit:PAGE,selectedKey:null,timelineEvent:null,timelineButtons:new Map(),loading:false,error:null,message:"",map:null,layer:null,markers:new Map(),mapAvailable:false,tileFailed:false,keyByObject:new WeakMap()};
+  const state={dataset:[],issues:[],ingestion:null,provenance:"unknown",events:[],intelligence:{model:null,events:[]},evaluation:null,weights:null,search:"",filters:{confidenceMin:0,frpMin:null,fromDate:"",toDate:"",satellite:"",daynight:"",staticOnly:false,event:""},sort:"score",limit:PAGE,selectedKey:null,timelineEvent:null,timelineButtons:new Map(),breakdownButtons:new Map(),loading:false,error:null,message:"",map:null,layer:null,markers:new Map(),mapAvailable:false,tileFailed:false,keyByObject:new WeakMap()};
   const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=String(text);return n;};
   const text=(id,value)=>$(id).textContent=value==null?"Unavailable":String(value);
   const fmt=(v,d=2)=>v==null||v===""||!Number.isFinite(Number(v))?"Unavailable":Number(v).toFixed(d);
@@ -94,13 +94,263 @@
       box.append(list);
     }
   }
-  function openTimeline(id){state.timelineEvent=id==null||id===""?null:String(id);timeline();}
+  function openTimeline(id){state.timelineEvent=id==null||id===""?null:String(id);timeline();breakdown();evidence();}
+  // Phase 5.2: explain the backend's uncalibrated review priority. Contributions (c_*) and
+  // normalized factors (f_*) are read directly from the API response; the frontend never
+  // recomputes the scoring formula. Any field may be absent, so every check is explicit.
+  const PRIORITY_FACTORS=[["Recency","recency"],["Confidence","confidence"],["Fire radiative power (FRP)","frp"],["Repeat observations","repeats"],["Brightness","brightness"]];
+  const FACTOR_DETAIL={
+    recency:{rawLabel:"Acquisition time (supplied; UTC)",raw:r=>time(r.time),explain:"Relative to the latest observation in this loaded dataset, with a 24-hour half-life. It is not measured from the current clock."},
+    confidence:{rawLabel:"Normalized confidence (API)",raw:r=>r.confidence==null||r.confidence===""?null:fmt(r.confidence,3),explain:"The API-normalized confidence value for this detection."},
+    frp:{rawLabel:"FRP (API units unspecified)",raw:r=>r.frp==null||r.frp===""?null:fmt(r.frp,3),explain:"A bounded logarithmic factor of the supplied fire radiative power measurement; the API does not state units."},
+    repeats:{rawLabel:"Other nearby detections within ±72 h",raw:r=>r.repeat_count==null||r.repeat_count===""?null:String(r.repeat_count),explain:"Other distinct acquisition times in the same approximate spatial bin (about 0.02°) within ±72 hours. This is not the event's row count."},
+    brightness:{rawLabel:"Brightness (API units unspecified)",raw:r=>r.brightness==null||r.brightness===""?null:fmt(r.brightness,2),explain:"A bounded transformation of the supplied brightness measurement, referenced to 300 K."}
+  };
+  const isNumber=v=>v!==null&&v!==undefined&&v!==""&&Number.isFinite(Number(v));
+  // The event maximum is the highest individual observation score, not an average or total.
+  function eventMaximum(id){
+    const rows=state.dataset.filter(r=>r.event_id!=null&&String(r.event_id)===String(id));
+    const record=state.events.find(e=>e.event_id!=null&&String(e.event_id)===String(id));
+    const backend=record&&isNumber(record.top_score)?Number(record.top_score):null;
+    const scores=rows.filter(r=>isNumber(r.score)).map(r=>Number(r.score));
+    const maximum=backend!==null?backend:(scores.length?Math.max(...scores):null);
+    const tied=maximum===null?[]:rows.filter(r=>isNumber(r.score)&&Math.abs(Number(r.score)-maximum)<1e-9);
+    return {maximum,tied};
+  }
+  function observationButtons(rows,dataset){
+    const list=el("ul","tie-list");
+    for(const r of rows){
+      const key=state.keyByObject.get(r),li=el("li","tie-entry");
+      li.append(el("p","tie-meta",`${time(r.time)} · observation key ${key??"Unavailable"}`));
+      const b=el("button","text-button",key===state.selectedKey?"Selected observation":"Inspect this observation");b.type="button";b.disabled=key==null;b.setAttribute("aria-pressed",String(key===state.selectedKey));
+      if(key!=null)state.breakdownButtons.set(key,b);
+      b.addEventListener("click",()=>{
+        if(state.dataset!==dataset||b.disabled)return;
+        const observationKey=key,restoreFocus=document.activeElement===b;
+        select(observationKey);
+        // Match Phase 5.1: restore focus by key, or leave it alone if the observation is gone.
+        const equivalent=state.dataset===dataset?state.breakdownButtons.get(observationKey):null;
+        if(restoreFocus&&equivalent&&!equivalent.disabled)equivalent.focus();
+      });
+      li.append(b);list.append(li);
+    }
+    return list;
+  }
+  function factorEntry(r,name,key,missing){
+    const detail=FACTOR_DETAIL[key],cRaw=r[`c_${key}`],fRaw=r[`f_${key}`];
+    const cKnown=isNumber(cRaw),fKnown=isNumber(fRaw),raw=detail.raw(r);
+    const entry=el("div","factor-entry");
+    entry.append(el("p","factor-head",`${name}: ${cKnown?`${fmt(cRaw,2)} pts`:"Unavailable"}`));
+    const meta=[];
+    if(fKnown)meta.push(`normalized f_${key}: ${fmt(fRaw,3)}`);
+    if(raw!==null&&raw!==undefined&&raw!=="")meta.push(`${detail.rawLabel}: ${raw}`);
+    entry.append(el("p","muted",meta.length?meta.join(" · "):"No normalized or raw value was returned for this factor."));
+    let status;
+    if(!cKnown&&!fKnown)status="Contribution and normalized value not returned by this API response.";
+    else if(!cKnown)status="Contribution field not returned by this API response.";
+    else if(!fKnown)status="Contribution provided, but no normalized value was returned.";
+    else if(missing)status="The raw measurement is missing, so the backend assigned 0 contribution.";
+    else if(Number(cRaw)===0)status="Genuine zero: the measurement is present but contributes 0.00 points.";
+    else status=`Contributes ${fmt(cRaw,2)} of the 100 review-priority points.`;
+    const kind=!cKnown||!fKnown?"unavailable":(missing?"missing":(Number(cRaw)===0?"zero":"points"));
+    entry.append(el("p",`factor-status ${kind}`,status));
+    entry.append(el("p","help",detail.explain));
+    return entry;
+  }
+  function breakdown(){
+    const box=$("breakdownContent"),dataset=state.dataset;
+    box.replaceChildren();state.breakdownButtons.clear();
+    box.append(el("h3","","Event review priority"));
+    if(state.timelineEvent===null){
+      box.append(el("p","muted","Select an event, table row or map marker to see the highest observation score within it."));
+    }else{
+      const {maximum,tied}=eventMaximum(state.timelineEvent);
+      box.append(el("p","score-value",`Event review priority: ${maximum===null?"Unavailable":`${fmt(maximum,2)} / 100`}`));
+      box.append(el("p","help","Highest observation score within this event. It is one observation's score, not an average, sum, or aggregate for the event."));
+      if(maximum!==null&&tied.length){box.append(el("p","muted",tied.length===1?"1 observation produced this maximum:":`${tied.length} observations tie for this maximum. Inspect each:`));box.append(observationButtons(tied,dataset));}
+      else if(maximum!==null)box.append(el("p","muted","No observation in the current dataset matches that maximum."));
+    }
+    box.append(el("h3","","Selected observation breakdown"));
+    const r=state.selectedKey?state.dataset.find(x=>state.keyByObject.get(x)===state.selectedKey):null;
+    if(!r){box.append(el("p","muted","Select an observation in the table, timeline or map to see its score contributions."));return;}
+    box.append(el("p","score-value",`Observation review priority: ${isNumber(r.score)?`${fmt(r.score,2)} / 100`:"Unavailable"}`));
+    if(state.timelineEvent!==null){
+      if(r.event_id!=null&&String(r.event_id)!==String(state.timelineEvent))box.append(el("p","muted",`This observation belongs to event ${r.event_id}, not the event shown above.`));
+      else{
+        const {maximum,tied}=eventMaximum(state.timelineEvent);
+        if(maximum!==null&&isNumber(r.score)&&Math.abs(Number(r.score)-maximum)<1e-9)box.append(el("p","muted",tied.length>1?`This observation is tied for the highest score in event ${state.timelineEvent}.`:`This observation has the highest score in event ${state.timelineEvent}.`));
+        else if(maximum!==null&&isNumber(r.score))box.append(el("p","muted",`This is not the event maximum; the highest score in event ${state.timelineEvent} is ${fmt(maximum,2)}.`));
+        else box.append(el("p","muted","Event maximum unavailable for comparison."));
+      }
+    }
+    box.append(el("p","help","This observation's own score is separate from the event maximum. Scores are uncalibrated review priorities, not fire probabilities or predictions of spread."));
+    if(r.why!==null&&r.why!==undefined&&r.why!=="")box.append(el("p","muted",`Backend explanation: ${r.why}`));
+    const missing=new Set(Array.isArray(r.score_missing_factors)?r.score_missing_factors.map(String):[]);
+    const list=el("div","factor-list");
+    for(const [name,key] of PRIORITY_FACTORS)list.append(factorEntry(r,name,key,missing.has(key)));
+    box.append(list);
+    box.append(el("p","help","Contributions are returned by the API; this dashboard does not recompute the scoring formula and shows values as received."));
+  }
+  // Phase 5.3: deterministic evidence and uncertainty. Every value comes from the API response;
+  // nothing is inferred, scored, or generated, and no LLM is used. Fields may be absent, so
+  // each state is decided with explicit null/undefined checks.
+  const RECURRENCE_STATUS={possible_persistent_source:"Recurrence flagged (possible persistent source)",not_flagged:"Recurrence not flagged",insufficient_history:"Insufficient history to assess recurrence"};
+  const TREND_STATUS={rising:"FRP rising",falling:"FRP falling",stable:"FRP stable",insufficient_data:"Insufficient data for a trend"};
+  function intelligenceFor(id){
+    if(id===null)return null;
+    const events=state.intelligence&&Array.isArray(state.intelligence.events)?state.intelligence.events:[];
+    return events.find(e=>e&&e.event_id!=null&&String(e.event_id)===String(id))||null;
+  }
+  const evidenceStatus=(label,text,state)=>el("p",`evidence-status ${state}`,`${label}: ${text}`);
+  function evidenceFactor(r,name,key,missing){
+    const cRaw=r[`c_${key}`],fRaw=r[`f_${key}`],cKnown=isNumber(cRaw),fKnown=isNumber(fRaw);
+    let text,state;
+    if(!cKnown&&!fKnown){text="contribution and normalized value unavailable (not returned by the API)";state="unavailable";}
+    else if(!cKnown){text="contribution field unavailable (not returned by the API)";state="unavailable";}
+    else if(!fKnown){text="normalized value unavailable; contribution shown as received";state="unavailable";}
+    else if(missing.has(key)){text="measurement missing; the backend assigns 0 contribution";state="missing";}
+    else if(Number(cRaw)===0){text="measurement present with a genuine zero contribution";state="zero";}
+    else{text=`measurement present; contributes ${fmt(cRaw,2)} points`;state="present";}
+    return el("p",`evidence-factor ${state}`,`${name} — ${text}`);
+  }
+  function evidence(){
+    const box=$("evidenceContent");box.replaceChildren();
+    const event=state.timelineEvent;
+    const r=state.selectedKey?state.dataset.find(x=>state.keyByObject.get(x)===state.selectedKey):null;
+    const intel=intelligenceFor(event);
+    const model=state.intelligence&&state.intelligence.model?state.intelligence.model:null;
+    const anomaly=intel&&intel.anomaly?intel.anomaly:null;
+    const missing=new Set(r&&Array.isArray(r.score_missing_factors)?r.score_missing_factors.map(String):[]);
+
+    box.append(el("h3","","Supporting evidence"));
+    if(event===null)box.append(el("p","muted","Select an event, table row or map marker to see its supporting evidence."));
+    else{
+      const {maximum,tied}=eventMaximum(event);
+      box.append(el("p","muted",maximum===null?"Event review priority: Unavailable":`Event review priority: ${fmt(maximum,2)} / 100 — the highest observation score, not an event average.`));
+      if(maximum!==null&&tied.length)box.append(el("p","help",tied.length===1?`Highest-scoring observation: ${time(tied[0].time)} · key ${state.keyByObject.get(tied[0])??"Unavailable"}`:`${tied.length} observations tie for the highest score: ${tied.map(x=>time(x.time)).join("; ")}`));
+    }
+    if(r){
+      const dl=el("dl","detail-list");
+      detailLine(dl,"Observation review priority (derived; uncalibrated)",isNumber(r.score)?`${fmt(r.score,2)} / 100`:null);
+      detailLine(dl,"Acquisition time (supplied; UTC)",r.time==null?null:time(r.time));
+      detailLine(dl,"Latitude (supplied)",r.latitude==null?null:fmt(r.latitude,5));
+      detailLine(dl,"Longitude (supplied)",r.longitude==null?null:fmt(r.longitude,5));
+      detailLine(dl,"Satellite (supplied)",r.satellite);
+      detailLine(dl,"Instrument (supplied)",r.instrument);
+      detailLine(dl,"Raw confidence (supplied)",r.confidence_raw);
+      detailLine(dl,"Normalized confidence (derived by the API)",r.confidence==null?null:fmt(r.confidence,3));
+      detailLine(dl,"FRP (supplied; API units unspecified)",r.frp==null?null:fmt(r.frp,3));
+      detailLine(dl,"Brightness (supplied; API units unspecified)",r.brightness==null?null:fmt(r.brightness,2));
+      detailLine(dl,"Day / night (supplied)",r.daynight);
+      detailLine(dl,"Other nearby detections within ±72 h (derived; not the event row count)",r.repeat_count==null?null:String(r.repeat_count));
+      detailLine(dl,"Source CSV line (supplied)",r.source_line);
+      box.append(dl);
+      box.append(el("p","muted",`Contribution points reported by the API: ${PRIORITY_FACTORS.map(([name,key])=>`${name} ${isNumber(r[`c_${key}`])?fmt(r[`c_${key}`],2):"Unavailable"}`).join(" · ")}`));
+      if(r.why!=null&&r.why!=="")box.append(el("p","muted",`Backend explanation: ${r.why}`));
+    }else{
+      box.append(el("p","muted","Select an observation in the table, timeline or map to list its measurements."));
+    }
+
+    box.append(el("h3","","Missing evidence"));
+    if(r){
+      for(const [name,key] of PRIORITY_FACTORS)box.append(evidenceFactor(r,name,key,missing));
+    }else{
+      box.append(el("p","muted","Select an observation to classify each scoring factor."));
+    }
+    const md=el("dl","detail-list");
+    const rowMissing=r?[...missing]:null;
+    detailLine(md,"Observation factors the API marks missing",r===null?"Unavailable":(Array.isArray(r.score_missing_factors)?(rowMissing.length?rowMissing.join(", "):"None reported"):"Not reported by the API"));
+    const featureMissing=intel&&Array.isArray(intel.missing_features)?intel.missing_features.map(String):null;
+    detailLine(md,"Event features unavailable",event===null?"Unavailable":(intel===null?"Unavailable":(featureMissing===null?"Not reported by the API":(featureMissing.length?featureMissing.join(", "):"None reported"))));
+    box.append(md);
+    if(rowMissing&&rowMissing.length)box.append(el("p","help","The API lists the missing measurements but does not state why each is absent, so the reason was not provided."));
+    if(featureMissing&&featureMissing.length)box.append(el("p","help","The API lists these event features as unavailable without a per-feature reason, so the reason was not provided."));
+
+    box.append(el("h3","","Trend status and limitations"));
+    if(event===null)box.append(el("p","muted","Select an event to see its trend evidence."));
+    else if(!intel||!intel.trend)box.append(el("p","muted","Trend evidence unavailable from this API response."));
+    else{
+      const trend=intel.trend,status=trend.status;
+      box.append(evidenceStatus("Trend",TREND_STATUS[status]||(status==null?"Unavailable":String(status)),status==="insufficient_data"?"insufficient":(TREND_STATUS[status]?"ok":"unavailable")));
+      box.append(el("p","muted",trend.reason?`Reported reason: ${trend.reason}`:"Reported reason: not provided."));
+      const dl=el("dl","detail-list");
+      detailLine(dl,"Distinct acquisition times used",trend.distinct_observation_times==null?null:String(trend.distinct_observation_times));
+      detailLine(dl,"Time span covered (h)",trend.span_h==null?null:fmt(trend.span_h,2));
+      detailLine(dl,"Observed mean-FRP change (MW; API units unspecified)",trend.frp_change_mw==null?null:fmt(trend.frp_change_mw,3));
+      detailLine(dl,"Observed mean-FRP change fraction",trend.frp_change_fraction==null?null:fmt(trend.frp_change_fraction,3));
+      detailLine(dl,"Early detections per acquisition time",trend.early_detections_per_time==null?null:fmt(trend.early_detections_per_time,3));
+      detailLine(dl,"Late detections per acquisition time",trend.late_detections_per_time==null?null:fmt(trend.late_detections_per_time,3));
+      box.append(dl);
+      if(trend.sampling_limitation)box.append(el("p","help",`Sampling limitation: ${trend.sampling_limitation}`));
+      box.append(el("p","help","A measured change in mean FRP is not confirmed physical fire spread, and gaps in observations do not prove that activity stopped."));
+    }
+
+    box.append(el("h3","","Recurrence evidence"));
+    if(!r)box.append(el("p","muted","Select an observation to see its historical recurrence evidence."));
+    else{
+      const status=r.persistent_source_status;
+      box.append(evidenceStatus("Historical recurrence",RECURRENCE_STATUS[status]||(status==null?"Unavailable":String(status)),status==="possible_persistent_source"?"flagged":(status==="not_flagged"?"not-flagged":(status==="insufficient_history"?"insufficient":"unavailable"))));
+      if(status==null)box.append(el("p","muted","The API did not return a recurrence status."));
+      const ev=r.persistent_source_evidence;
+      if(ev&&typeof ev==="object"&&!Array.isArray(ev)){
+        const dl=el("dl","detail-list");
+        detailLine(dl,"Distinct historical acquisition times",ev.distinct_times==null?null:String(ev.distinct_times));
+        detailLine(dl,"Distinct historical days",ev.distinct_days==null?null:String(ev.distinct_days));
+        detailLine(dl,"History coverage (days)",ev.coverage_days==null?null:fmt(ev.coverage_days,2));
+        detailLine(dl,"Historical first seen",ev.first_seen==null?null:time(ev.first_seen));
+        detailLine(dl,"Historical last seen",ev.last_seen==null?null:time(ev.last_seen));
+        detailLine(dl,"Approximate spatial bin (degrees)",ev.spatial_bin_degrees==null?null:fmt(ev.spatial_bin_degrees,3));
+        detailLine(dl,"Required distinct days",ev.min_days==null?null:String(ev.min_days));
+        detailLine(dl,"Required distinct times",ev.min_distinct_times==null?null:String(ev.min_distinct_times));
+        detailLine(dl,"Required coverage (days)",ev.min_coverage_days==null?null:fmt(ev.min_coverage_days,2));
+        detailLine(dl,"Lookback window (days)",ev.lookback_days==null?null:String(ev.lookback_days));
+        box.append(dl);
+        box.append(el("p","muted",ev.reason!=null&&ev.reason!==""?`Reported evidence reason: ${ev.reason}`:"Reported evidence reason: not provided."));
+      }else{
+        box.append(el("p","muted","Historical evidence detail: not provided by the API."));
+      }
+      box.append(el("p","help","Recurrence evidence does not confirm a recurring wildfire; the repeat count reflects other nearby detections, not independent fire events."));
+    }
+
+    box.append(el("h3","","Anomaly & model availability"));
+    if(anomaly){
+      if(anomaly.status==="available")box.append(evidenceStatus("Anomaly indicator",anomaly.anomaly_flag===true?"Anomaly flagged":anomaly.anomaly_flag===false?"No anomaly flagged by this model":"Flag not returned by the API",anomaly.anomaly_flag===true?"flagged":anomaly.anomaly_flag===false?"not-flagged":"unavailable"));
+      else box.append(evidenceStatus("Anomaly indicator",anomaly.status==="unavailable"?"Unavailable — analysis could not be produced":(anomaly.status==null?"Unavailable":String(anomaly.status)),"unavailable"));
+      if(anomaly.model_version!=null)box.append(el("p","muted",`Model version: ${anomaly.model_version}`));
+      if(anomaly.anomaly_score!=null)box.append(el("p","muted",`Anomaly score (model output; not a fire probability): ${fmt(anomaly.anomaly_score,3)}`));
+      box.append(el("p","help","Unavailable anomaly output is not evidence that no anomaly exists; an anomaly score is separate from the review priority and is not a fire probability."));
+    }else{
+      box.append(evidenceStatus("Anomaly indicator",event===null?"Unavailable (no event selected)":"Unavailable from this API response","unavailable"));
+      box.append(el("p","help","Unavailable anomaly output is not evidence that no anomaly exists."));
+    }
+    if(model)box.append(evidenceStatus("Anomaly model",model.status==="available"?`Available${model.version?` (${model.version})`:""}`:`Unavailable${model.version?` (${model.version})`:""}${model.reason?` — ${model.reason}`:""}`,model.status==="available"?"ok":"unavailable"));
+    else box.append(evidenceStatus("Anomaly model","availability not reported by the API","unavailable"));
+
+    box.append(el("h3","","Uncertainty summary"));
+    const notes=[];
+    if(r&&missing.size)notes.push(`${missing.size} scoring measurement${missing.size===1?"":"s"} missing (${[...missing].join(", ")}); the backend assigns zero contribution and the API does not state the reason.`);
+    if(event===null)notes.push("No event is selected, so trend and event-level evidence are not shown.");
+    else if(!intel||!intel.trend||intel.trend.status==="insufficient_data")notes.push(`Trend cannot be assessed${intel&&intel.trend&&intel.trend.reason?`: ${intel.trend.reason}`:" from the current observation history"}.`);
+    else notes.push(`Trend is based on ${intel.trend.distinct_observation_times==null?"an unreported number of":intel.trend.distinct_observation_times} distinct acquisition times; a measured FRP change is not confirmed physical spread and observation gaps do not prove that activity stopped.`);
+    if(r){
+      const status=r.persistent_source_status,reason=r.persistent_source_evidence&&r.persistent_source_evidence.reason;
+      if(status==="insufficient_history")notes.push(`Historical recurrence cannot be assessed${reason?`: ${reason}`:"; the reason was not provided"}.`);
+      else if(status==="possible_persistent_source")notes.push("Historical recurrence evidence flags a possibly persistent source; this is not a confirmed wildfire.");
+      else if(status==="not_flagged")notes.push("Recurrence was not flagged for this observation.");
+    }
+    if(anomaly&&anomaly.status==="unavailable")notes.push("Anomaly analysis is unavailable; missing model output is not evidence that no anomaly exists.");
+    else if(anomaly&&anomaly.status==="available")notes.push(`Anomaly analysis is available and ${anomaly.anomaly_flag===true?"flagged this event":"did not flag this event"}; the anomaly score is not a fire probability.`);
+    notes.push("The review priority is an uncalibrated heuristic, not a fire probability, and satellite detections alone do not confirm a wildfire or its cause.");
+    const ul=el("ul","uncertainty-list");
+    for(const n of notes)ul.append(el("li","",n));
+    box.append(ul);
+  }
   function table(rows){const tb=$("tb");tb.replaceChildren();const page=rows.slice(0,state.limit);for(const r of page){const tr=document.createElement("tr"),key=state.keyByObject.get(r);tr.className="observation-row";tr.dataset.key=key;tr.tabIndex=0;tr.setAttribute("aria-selected",String(key===state.selectedKey));if(key===state.selectedKey)tr.classList.add("selected");const recurrence=r.persistent_source_status==="insufficient_history"?"Insufficient history":r.possible_static_source===true?"Possible":r.possible_static_source===false?"No":"Unavailable";const vals=[fmt(r.score,1),time(r.time),fmt(r.confidence),r.frp==null?"Unavailable":fmt(r.frp),r.satellite??"Unavailable",r.event_id??"Unavailable",recurrence];vals.forEach((v,i)=>{const td=document.createElement("td");td.textContent=String(v);if(i===0){td.className="priority-cell";td.style.setProperty("--priority-color",color(r.score));}tr.append(td);});tr.addEventListener("click",()=>select(key));tr.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();select(key);}});tb.append(tr);}$("pageInfo").textContent=rows.length?`Showing ${page.length} of ${rows.length} matching observations. Export includes all ${rows.length}.`:"No matching observations.";$("showMore").hidden=page.length>=rows.length;$("showMore").textContent=`Show ${Math.min(PAGE,rows.length-page.length)} more`;$("tableWrap").hidden=!rows.length;$("emptyState").hidden=!!rows.length;$("emptyTitle").textContent=state.dataset.length?"No observations match these filters.":"No observations to display.";$("emptyText").textContent=state.dataset.length?"Clear filters to see the full dataset.":"Load a dataset from the API to begin.";$("clearFromEmpty").hidden=!state.dataset.length||!!rows.length;$("exportCsv").disabled=!state.dataset.length;if(state.selectedKey&&!rows.some(r=>state.keyByObject.get(r)===state.selectedKey)){state.selectedKey=null;details(null);}}
   function ingestion(){const ing=state.ingestion,g=$("ingestionSummary");g.replaceChildren();if(!ing){text("provenance","No dataset loaded.");["mTotal","mAccepted","mRejected","mDuplicates","mEvents","mVisible"].forEach(id=>text(id,"—"));return;}text("provenance",{synthetic:"Synthetic demo data (backend-reported)",user_supplied_unverified:"User-supplied data; provenance unverified",unknown:"Unknown provenance"}[state.provenance]);for(const [label,value] of [["Physical CSV lines",ing.physical_lines],["Input columns",Array.isArray(ing.columns)?ing.columns.join(", ")||"Unavailable":null],["Record outcomes",Array.isArray(ing.outcomes)?ing.outcomes.length:null]]){const n=el("div","ingestion-item");n.append(el("span","",label),el("strong","",value==null?"Unavailable":value));g.append(n);}text("mTotal",ing.total_records??"Unavailable");text("mAccepted",ing.accepted??"Unavailable");text("mRejected",ing.rejected??"Unavailable");text("mDuplicates",ing.deduplicated??"Unavailable");text("mEvents",state.events.length);if(Array.isArray(ing.outcomes)&&ing.outcomes.length){const d=document.createElement("details");d.className="outcome-details";d.append(el("summary","",`Record validation outcomes (${ing.outcomes.length})`));const ul=document.createElement("ul");for(const o of ing.outcomes){const li=el("li","",[o.line!=null?`line ${o.line}${o.end_line!=null&&o.end_line!==o.line?`–${o.end_line}`:""}`:"line unavailable",o.status,o.reason].filter(Boolean).join(" · "));ul.append(li);}d.append(ul);g.append(d);}if(state.issues.length){const d=document.createElement("details");d.className="outcome-details";d.append(el("summary","",`Validation messages (${state.issues.length})`));const ul=document.createElement("ul");state.issues.forEach(issue=>ul.append(el("li","",issue)));d.append(ul);g.append(d);}}
   function events(){const box=$("eventContent"),sel=$("eventFilter"),old=state.filters.event,intelligence=state.intelligence||{model:null,events:[]},byEvent=new Map((intelligence.events||[]).map(e=>[String(e.event_id),e]));box.replaceChildren();sel.replaceChildren(new Option("All events",""));for(const e of state.events)if(e.event_id!=null)sel.add(new Option(`Event ${e.event_id} · ${e.pixels??"?"} observations`,String(e.event_id)));sel.value=[...sel.options].some(o=>o.value===old)?old:"";state.filters.event=sel.value;if(intelligence.model){const reason=intelligence.model.reason?`: ${intelligence.model.reason}`:"";box.append(el("p","muted",`Model anomaly analysis: ${intelligence.model.status??"Unavailable"}${reason}`));}if(!state.events.length){box.append(el("p","muted","Event information unavailable from this API response."));return;}for(const e of state.events.slice(0,8)){const card=el("article","event-card"),intel=byEvent.get(String(e.event_id)),trend=intel?.trend,anomaly=intel?.anomaly;card.append(el("h3","",`Event ${e.event_id??"Unavailable"}`),el("p","",`${e.pixels??"Unavailable"} observations · top score ${fmt(e.top_score,1)} · peak FRP ${fmt(e.peak_frp)} (units unspecified)`),el("p","muted",`${time(e.first_seen)} — ${time(e.last_seen)} · duration ${fmt(e.duration_h)} h`),el("p","muted",`Mean location: ${fmt(e.lat,4)}, ${fmt(e.lon,4)}`));if(trend)card.append(el("p","muted",`Observed FRP trend: ${trend.status??"Unavailable"}${trend.reason?` — ${trend.reason}`:""}`));if(anomaly)card.append(el("p","muted",anomaly.status==="available"?`Anomaly indicator: ${anomaly.anomaly_flag?"flagged":"not flagged"}; score ${fmt(anomaly.anomaly_score,3)} (separate from review priority)`: `Anomaly indicator: unavailable${anomaly.model_version?` (${anomaly.model_version})`:""}`));const b=el("button","text-button","Filter to event");b.type="button";b.addEventListener("click",()=>{state.filters.event=String(e.event_id);$("eventFilter").value=String(e.event_id);state.timelineEvent=String(e.event_id);render();});const view=el("button","text-button","View timeline");view.type="button";view.disabled=e.event_id==null;view.addEventListener("click",()=>openTimeline(e.event_id));card.append(b,view);box.append(card);}if(state.events.length>8)box.append(el("p","help",`Showing 8 of ${state.events.length} supplied events; all are available in the event filter.`));}
   function evaluation(){const box=$("evaluationContent");box.replaceChildren();if(!state.evaluation||typeof state.evaluation!=="object"){box.append(el("p","muted","Evaluation results unavailable from the current API."));return;}const dl=el("dl","detail-list");Object.entries(state.evaluation).forEach(([k,v])=>detailLine(dl,k.replaceAll("_"," "),typeof v==="object"?JSON.stringify(v):v));box.append(dl);}
   function status(){text("datasetMessage",state.message||"");$("datasetMessage").classList.toggle("error-text",!!state.error);$("connectionDot").classList.toggle("is-error",!!state.error);$("connectionDot").classList.toggle("is-ready",!!state.ingestion&&!state.error);}
-  function render(){status();ingestion();events();evaluation();const rows=filtered();text("mVisible",rows.length);text("resultCount",`${rows.length} matching observations from ${state.dataset.length} accepted observations.`);table(rows);updateMap(rows);timeline();if(state.selectedKey)details(state.dataset.find(r=>state.keyByObject.get(r)===state.selectedKey)||null);const vals=[...new Set(state.dataset.map(r=>`${r.satellite??"Unavailable"} / ${r.instrument??"Unavailable"}`))].sort(),s=$("satelliteFilter"),old=state.filters.satellite;s.replaceChildren(new Option("All available",""));vals.forEach(v=>s.add(new Option(v,v)));s.value=vals.includes(old)?old:"";state.filters.satellite=s.value;}
+  function render(){status();ingestion();events();evaluation();const rows=filtered();text("mVisible",rows.length);text("resultCount",`${rows.length} matching observations from ${state.dataset.length} accepted observations.`);table(rows);updateMap(rows);timeline();breakdown();evidence();if(state.selectedKey)details(state.dataset.find(r=>state.keyByObject.get(r)===state.selectedKey)||null);const vals=[...new Set(state.dataset.map(r=>`${r.satellite??"Unavailable"} / ${r.instrument??"Unavailable"}`))].sort(),s=$("satelliteFilter"),old=state.filters.satellite;s.replaceChildren(new Option("All available",""));vals.forEach(v=>s.add(new Option(v,v)));s.value=vals.includes(old)?old:"";state.filters.satellite=s.value;}
   function csvCell(v,isText=false){if(v==null)return"";let s=typeof v==="object"?JSON.stringify(v):String(v);if(isText&&/^\s*[=+@\-]/.test(s))s="'"+s;return`"${s.replaceAll('"','""')}"`;}
   function exportCsv(){const rows=filtered();if(!rows.length){announce("There are no matching observations to export.");return;}const cols=["observation_key","latitude","longitude","time_utc","satellite","instrument","confidence_raw","confidence","frp","brightness","daynight","label","event_id","possible_static_source","score","why","repeat_count","source_line","source_fields"],lines=[cols.map(x=>csvCell(x,true)).join(",")];for(const r of rows){const vals=[state.keyByObject.get(r),r.latitude,r.longitude,r.time,r.satellite,r.instrument,r.confidence_raw,r.confidence,r.frp,r.brightness,r.daynight,r.label,r.event_id,r.possible_static_source,r.score,r.why,r.repeat_count,r.source_line,r.source_fields];lines.push(vals.map((v,i)=>csvCell(v,![1,2,7,8,9,11,14,16,17].includes(i))).join(","));}const url=URL.createObjectURL(new Blob(["\ufeff"+lines.join("\r\n")],{type:"text/csv;charset=utf-8"})),a=document.createElement("a");a.href=url;a.download="fire-triage-matching-observations.csv";a.click();URL.revokeObjectURL(url);announce(`Exported all ${rows.length} matching observations.`);}
   function reset(){state.search="";state.filters={confidenceMin:0,frpMin:null,fromDate:"",toDate:"",satellite:"",daynight:"",staticOnly:false,event:""};state.sort="score";state.limit=PAGE;for(const [id,v] of Object.entries({search:"",confidenceMin:"0",frpMin:"",fromDate:"",toDate:"",satelliteFilter:"",daynightFilter:"",eventFilter:"",sortBy:"score"}))$(id).value=v;text("confidenceValue","0.00");$("staticOnly").checked=false;render();}

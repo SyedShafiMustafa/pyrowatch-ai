@@ -411,3 +411,413 @@ test('timeline membership stays independent of table filters and tied observatio
   assert.equal(entries(elements).length, 7);
   assert.ok(entries(elements).every(item => buttonFor(item).disabled === false));
 });
+const breakdownText = elements => content(elements.get('breakdownContent'));
+const tieButtons = elements => descendants(elements.get('breakdownContent')).filter(n => n.tagName === 'button');
+function breakdownRows() {
+  return [
+    // row A: every factor present; brightness measurement is present at the 300 K reference -> genuine zero.
+    {event_id: 0, latitude: 10, longitude: 20, time: '2026-10-10T00:00:00Z', satellite: 'N20', instrument: 'VIIRS',
+     confidence: 1, frp: 5, brightness: 300, repeat_count: 0, score: 90, why: '+25.0 frp; +20.0 confidence',
+     f_recency: 1, f_confidence: 1, f_frp: 1, f_repeats: 0, f_brightness: 0,
+     c_recency: 25, c_confidence: 20, c_frp: 25, c_repeats: 0, c_brightness: 0, score_missing_factors: []},
+    // row B: tied maximum; frp measurement is missing so the backend assigns zero contribution.
+    {event_id: 0, latitude: 10, longitude: 20, time: '2026-10-10T01:00:00Z', satellite: 'N20', instrument: 'VIIRS',
+     confidence: 0.5, frp: null, brightness: 350, repeat_count: 1, score: 90, why: '+20.0 confidence',
+     f_recency: 1, f_confidence: 0.5, f_frp: 0, f_repeats: 0.25, f_brightness: 0.5,
+     c_recency: 25, c_confidence: 10, c_frp: 0, c_repeats: 5, c_brightness: 5, score_missing_factors: ['frp']},
+    // row C: lower score; some contribution fields are absent and a normalized value is unavailable.
+    {event_id: 0, latitude: 10, longitude: 20, time: '2026-10-10T02:00:00Z', satellite: 'N20', instrument: 'VIIRS',
+     confidence: null, frp: 0, brightness: null, repeat_count: 0, score: 20, why: 'partial evidence',
+     f_recency: 1, f_confidence: null, f_frp: 0, f_repeats: null, f_brightness: null,
+     c_recency: 20, c_confidence: null, c_frp: 0, c_repeats: 5, c_brightness: null, score_missing_factors: ['confidence', 'brightness']}
+  ];
+}
+function breakdownPayload(rows = breakdownRows(), events = [{event_id: 0, pixels: 3, top_score: 90, peak_frp: 5,
+  first_seen: '2026-10-10T00:00:00Z', last_seen: '2026-10-10T02:00:00Z', duration_h: 2, lat: 10, lon: 20}]) {
+  return {rows, issues: [], events, ingestion: {accepted: rows.length, rejected: 0, deduplicated: 0, total_records: rows.length, data_kind: 'synthetic'}};
+}
+
+test('priority breakdown renders all five contribution factors for the selected observation', async () => {
+  const {elements} = dashboard('http:', {sample: breakdownPayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click();
+  const text = breakdownText(elements);
+  assert.equal(elements.get('timelineEvent').value, '0');
+  assert.ok(text.includes('Event review priority: 90.00 / 100'), text);
+  assert.ok(text.includes('Highest observation score within this event'));
+  assert.ok(text.includes('Observation review priority: 90.00 / 100'));
+  assert.ok(text.includes('Recency: 25.00 pts'));
+  assert.ok(text.includes('Confidence: 20.00 pts'));
+  assert.ok(text.includes('Fire radiative power (FRP): 25.00 pts'));
+  assert.ok(text.includes('Repeat observations: 0.00 pts'));
+  assert.ok(text.includes('Brightness: 0.00 pts'));
+  assert.ok(text.includes('normalized f_recency: 1.000'));
+  assert.ok(text.includes('Backend explanation: +25.0 frp'));
+});
+
+test('priority breakdown works for event id 0', async () => {
+  const {elements} = dashboard('http:', {sample: breakdownPayload()});
+  await elements.get('bSample').listeners.click();
+  pick(elements, '0');
+  assert.equal(elements.get('timelineEvent').value, '0');
+  assert.ok(breakdownText(elements).includes('Event review priority: 90.00 / 100'));
+});
+
+test('priority breakdown distinguishes genuine zeros from missing measurements', async () => {
+  const {elements} = dashboard('http:', {sample: breakdownPayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click(); // row A: brightness present at reference -> genuine zero
+  assert.ok(breakdownText(elements).includes('Genuine zero: the measurement is present but contributes 0.00 points'));
+  elements.get('tb').children[1].listeners.click(); // row B: frp measurement missing -> backend zero
+  const text = breakdownText(elements);
+  assert.ok(text.includes('Fire radiative power (FRP): 0.00 pts'));
+  assert.ok(text.includes('The raw measurement is missing, so the backend assigned 0 contribution'));
+});
+
+test('priority breakdown reports missing contribution fields and unavailable normalized values', async () => {
+  const {elements} = dashboard('http:', {sample: breakdownPayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[2].listeners.click(); // row C
+  const text = breakdownText(elements);
+  assert.ok(text.includes('Confidence: Unavailable'));
+  assert.ok(text.includes('Brightness: Unavailable'));
+  assert.ok(text.includes('not returned by this API response'));
+  assert.ok(text.includes('Contribution provided, but no normalized value was returned'));
+  assert.ok(text.includes('Repeat observations: 5.00 pts'));
+});
+
+test('priority breakdown separates the event maximum from the selected observation score', async () => {
+  const {elements} = dashboard('http:', {sample: breakdownPayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[2].listeners.click(); // row C (score 20)
+  const text = breakdownText(elements);
+  assert.ok(text.includes('Event review priority: 90.00 / 100'));
+  assert.ok(text.includes('Observation review priority: 20.00 / 100'));
+  assert.ok(text.includes('This is not the event maximum; the highest score in event 0 is 90.00'));
+});
+
+test('priority breakdown lists every observation tied for the event maximum and lets each be inspected', async () => {
+  const {elements, document} = dashboard('http:', {sample: breakdownPayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click(); // row A, tied at 90 with row B
+  assert.ok(breakdownText(elements).includes('2 observations tie for this maximum'));
+  let buttons = tieButtons(elements);
+  assert.equal(buttons.length, 2);
+  assert.equal(buttons[0]['aria-pressed'], 'true');
+  assert.equal(buttons[1]['aria-pressed'], 'false');
+  buttons[1].focus();
+  buttons[1].listeners.click();
+  const text = breakdownText(elements);
+  assert.ok(text.includes('The raw measurement is missing, so the backend assigned 0 contribution'));
+  assert.ok(text.includes('Observation review priority: 90.00 / 100'));
+  const after = tieButtons(elements);
+  assert.equal(after[1]['aria-pressed'], 'true');
+  assert.equal(after[0]['aria-pressed'], 'false');
+  assert.equal(document.activeElement, after[1]); // focus follows the observation key across the re-render
+});
+
+test('priority breakdown keeps the event maximum independent of table filters', async () => {
+  const {elements} = dashboard('http:', {sample: breakdownPayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('frpMin').listeners.input({target: {value: '1000'}}); // hide every observation from the table
+  assert.equal(elements.get('mVisible').textContent, '0');
+  pick(elements, '0'); // the event maximum must come from the full event, not the filtered table
+  const text = breakdownText(elements);
+  assert.ok(text.includes('Event review priority: 90.00 / 100'));
+  assert.ok(text.includes('2 observations tie for this maximum'));
+  assert.equal(tieButtons(elements).length, 2);
+});
+
+test('priority breakdown clears on dataset replacement', async () => {
+  const {elements} = dashboard('http:', {sample: breakdownPayload(), uploaded: payload([])});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click();
+  assert.ok(breakdownText(elements).includes('Recency: 25.00 pts'));
+  await elements.get('file').listeners.change({target: {files: [{name: 'empty.csv'}]}});
+  const text = breakdownText(elements);
+  assert.ok(text.includes('Select an event, table row or map marker to see the highest observation score within it'));
+  assert.ok(text.includes('Select an observation in the table, timeline or map to see its score contributions'));
+  assert.equal(descendants(elements.get('breakdownContent')).filter(n => n.className === 'factor-entry').length, 0);
+  assert.equal(tieButtons(elements).length, 0);
+});
+
+test('priority breakdown renders untrusted text safely', async () => {
+  const rows = breakdownRows();
+  rows[0].why = '<img src=x onerror=alert(1)>';
+  const {elements, createdElements} = dashboard('http:', {sample: breakdownPayload(rows)});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click();
+  assert.ok(breakdownText(elements).includes('<img src=x onerror=alert(1)>'));
+  assert.ok(!createdElements.some(n => n.tagName === 'img'));
+});
+
+test('priority breakdown does not disturb the Phase 5.1 timeline or its focus restoration', async () => {
+  const {elements, document} = dashboard('http:', {sample: breakdownPayload()});
+  await elements.get('bSample').listeners.click();
+  pick(elements, '0');
+  assert.equal(entries(elements).length, 3);
+  const item = entries(elements)[1], key = item.dataset.key, oldButton = buttonFor(item);
+  oldButton.focus();
+  oldButton.listeners.click();
+  const replacement = buttonFor(entries(elements).find(n => n.dataset.key === key));
+  assert.notEqual(replacement, oldButton);
+  assert.equal(document.activeElement, replacement);
+  assert.equal(entries(elements).find(n => buttonFor(n) === document.activeElement).dataset.key, key);
+});
+const evidenceText = elements => content(elements.get('evidenceContent'));
+function evidenceRows() {
+  return [
+    // row A: complete measurements; brightness at the 300 K reference -> genuine zero.
+    {event_id: 0, latitude: 10, longitude: 20, time: '2026-10-10T00:00:00Z', satellite: 'N20', instrument: 'VIIRS',
+     confidence: 1, frp: 5, brightness: 300, repeat_count: 2, score: 80, why: '+25.0 frp; +20.0 confidence',
+     f_recency: 1, f_confidence: 1, f_frp: 1, f_repeats: 0.5, f_brightness: 0,
+     c_recency: 25, c_confidence: 20, c_frp: 25, c_repeats: 10, c_brightness: 0, score_missing_factors: [],
+     possible_static_source: false, persistent_source_status: 'not_flagged',
+     persistent_source_evidence: {distinct_times: 4, distinct_days: 3, coverage_days: 12.5, first_seen: '2026-09-20T00:00:00Z',
+       last_seen: '2026-10-02T00:00:00Z', spatial_bin_degrees: 0.01, min_days: 10, min_distinct_times: 0, min_coverage_days: 0, lookback_days: null}},
+    // row C: recurrence flagged; the repeats contribution field is absent from the response.
+    {event_id: 0, latitude: 10, longitude: 22, time: '2026-10-10T02:00:00Z', satellite: 'N20', instrument: 'VIIRS',
+     confidence: 0.5, frp: 2, brightness: 400, repeat_count: 5, score: 40, why: 'partial evidence',
+     f_recency: 1, f_confidence: 0.5, f_frp: 0.5, f_repeats: null, f_brightness: 0.5,
+     c_recency: 20, c_confidence: 10, c_frp: 10, c_repeats: null, c_brightness: 5, score_missing_factors: [],
+     possible_static_source: true, persistent_source_status: 'possible_persistent_source',
+     persistent_source_evidence: {distinct_times: 12, distinct_days: 11, coverage_days: 40, first_seen: '2026-08-01T00:00:00Z',
+       last_seen: '2026-09-10T00:00:00Z', spatial_bin_degrees: 0.01, min_days: 10, min_distinct_times: 0, min_coverage_days: 0, lookback_days: null}},
+    // row B: measurements missing; recurrence history insufficient.
+    {event_id: 0, latitude: 10, longitude: 21, time: '2026-10-10T01:00:00Z', satellite: 'N20', instrument: 'VIIRS',
+     confidence: null, frp: null, brightness: null, repeat_count: 0, score: 10, why: '',
+     f_recency: 0.5, f_confidence: 0, f_frp: 0, f_repeats: 0, f_brightness: 0,
+     c_recency: 10, c_confidence: 0, c_frp: 0, c_repeats: 0, c_brightness: 0, score_missing_factors: ['confidence', 'frp', 'brightness'],
+     possible_static_source: false, persistent_source_status: 'insufficient_history',
+     persistent_source_evidence: {reason: 'no historical archive', distinct_times: 0, distinct_days: 0, coverage_days: 0}}
+  ];
+}
+function evidenceIntel(over = {}) {
+  const trend = over.trend === undefined
+    ? {status: 'insufficient_data', frp_change_mw: null, frp_change_fraction: null, early_detections_per_time: null,
+       late_detections_per_time: null, distinct_observation_times: 3, span_h: 2,
+       reason: 'need at least three valid-FRP acquisition times over six hours',
+       sampling_limitation: 'observation opportunities and missed overpasses are unknown'}
+    : over.trend;
+  const anomaly = over.anomaly === undefined
+    ? {event_id: 0, status: 'unavailable', model_version: 'phase4-event-iforest-v1', anomaly_score: null, anomaly_flag: null}
+    : over.anomaly;
+  const model = over.model === undefined
+    ? {status: 'unavailable', version: 'phase4-event-iforest-v1', reason: 'model artifact is missing'}
+    : over.model;
+  return {model, events: [{event_id: 0, first_seen: '2026-10-10T00:00:00Z', last_seen: '2026-10-10T02:00:00Z',
+    features: {detection_count: 3, distinct_observation_times: 3, duration_h: 2, peak_frp: 5, mean_frp: 3.5,
+      mean_confidence: 0.75, peak_brightness: 400, mean_brightness: 350, frp_delta_mw: null,
+      detection_frequency_delta: null, observed_footprint_delta_km2: null, median_revisit_h: null},
+    missing_features: ['frp_delta_mw', 'detection_frequency_delta', 'observed_footprint_delta_km2', 'median_revisit_h'],
+    trend, anomaly}]};
+}
+function evidencePayload(rows = evidenceRows(), intelligence = evidenceIntel()) {
+  return {rows, issues: [], events: [{event_id: 0, pixels: 3, top_score: 80, peak_frp: 5, first_seen: '2026-10-10T00:00:00Z',
+      last_seen: '2026-10-10T02:00:00Z', duration_h: 2, lat: 10, lon: 20}], intelligence,
+    ingestion: {accepted: rows.length, rejected: 0, deduplicated: 0, total_records: rows.length, data_kind: 'synthetic'}};
+}
+
+test('evidence panel lists supporting measurements with supplied versus derived labels', async () => {
+  const {elements} = dashboard('http:', {sample: evidencePayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click(); // row A
+  const t = evidenceText(elements);
+  assert.equal(elements.get('timelineEvent').value, '0');
+  assert.ok(t.includes('Supporting evidence'));
+  assert.ok(t.includes('Observation review priority (derived; uncalibrated)'));
+  assert.ok(t.includes('Satellite (supplied)'));
+  assert.ok(t.includes('N20'));
+  assert.ok(t.includes('Instrument (supplied)'));
+  assert.ok(t.includes('Raw confidence (supplied)'));
+  assert.ok(t.includes('Normalized confidence (derived by the API)'));
+  assert.ok(t.includes('FRP (supplied; API units unspecified)'));
+  assert.ok(t.includes('Brightness (supplied; API units unspecified)'));
+  assert.ok(t.includes('Other nearby detections within ±72 h (derived; not the event row count)'));
+  assert.ok(t.includes('Contribution points reported by the API'));
+  assert.ok(t.includes('Backend explanation: +25.0 frp'));
+});
+
+test('evidence panel distinguishes genuine zeros from missing measurements', async () => {
+  const {elements} = dashboard('http:', {sample: evidencePayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click(); // row A: brightness present at reference -> genuine zero
+  assert.ok(evidenceText(elements).includes('measurement present with a genuine zero contribution'));
+  elements.get('tb').children[2].listeners.click(); // row B: measurements missing
+  const t = evidenceText(elements);
+  assert.ok(t.includes('measurement missing; the backend assigns 0 contribution'));
+  assert.ok(t.includes('Observation factors the API marks missing'));
+  assert.ok(t.includes('confidence, frp, brightness'));
+});
+
+test('evidence panel does not fabricate reasons for missing fields', async () => {
+  const {elements} = dashboard('http:', {sample: evidencePayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[2].listeners.click(); // row B
+  const t = evidenceText(elements);
+  assert.ok(t.includes('does not state why each is absent, so the reason was not provided'));
+  assert.ok(t.includes('without a per-feature reason, so the reason was not provided'));
+  assert.ok(!t.includes('because'));
+});
+
+test('evidence panel reports trend status, insufficiency and sampling limitations', async () => {
+  const {elements} = dashboard('http:', {sample: evidencePayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click();
+  const t = evidenceText(elements);
+  assert.ok(t.includes('Trend: Insufficient data for a trend'));
+  assert.ok(t.includes('need at least three valid-FRP acquisition times over six hours'));
+  assert.ok(t.includes('Sampling limitation: observation opportunities and missed overpasses are unknown'));
+  assert.ok(t.includes('A measured change in mean FRP is not confirmed physical fire spread'));
+  // An available trend keeps its own status and numbers.
+  const stable = dashboard('http:', {sample: evidencePayload(evidenceRows(), evidenceIntel({trend: {status: 'stable',
+    frp_change_mw: 0.5, frp_change_fraction: 0.05, early_detections_per_time: 2, late_detections_per_time: 2,
+    distinct_observation_times: 4, span_h: 10, reason: 'observed first-to-last mean FRP; gaps and missed passes are unobserved',
+    sampling_limitation: 'observation opportunities and missed overpasses are unknown'}}))});
+  await stable.elements.get('bSample').listeners.click();
+  stable.elements.get('tb').children[0].listeners.click();
+  const st = evidenceText(stable.elements);
+  assert.ok(st.includes('Trend: FRP stable'));
+  assert.ok(st.includes('Observed mean-FRP change (MW; API units unspecified)'));
+  assert.ok(st.includes('0.500'));
+});
+
+test('evidence panel distinguishes recurrence states and history evidence', async () => {
+  const {elements} = dashboard('http:', {sample: evidencePayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click(); // row A: not flagged
+  assert.ok(evidenceText(elements).includes('Historical recurrence: Recurrence not flagged'));
+  assert.ok(evidenceText(elements).includes('Distinct historical days'));
+  elements.get('tb').children[2].listeners.click(); // row B: insufficient history
+  assert.ok(evidenceText(elements).includes('Historical recurrence: Insufficient history to assess recurrence'));
+  assert.ok(evidenceText(elements).includes('Reported evidence reason: no historical archive'));
+  elements.get('tb').children[1].listeners.click(); // row C: flagged
+  assert.ok(evidenceText(elements).includes('Historical recurrence: Recurrence flagged (possible persistent source)'));
+});
+
+test('evidence panel distinguishes flagged, not-flagged, unavailable and incompatible anomaly states', async () => {
+  const base = dashboard('http:', {sample: evidencePayload()});
+  await base.elements.get('bSample').listeners.click();
+  base.elements.get('tb').children[0].listeners.click();
+  const bt = evidenceText(base.elements);
+  assert.ok(bt.includes('Anomaly indicator: Unavailable — analysis could not be produced'));
+  assert.ok(bt.includes('Unavailable anomaly output is not evidence that no anomaly exists'));
+  assert.ok(bt.includes('Anomaly model: Unavailable (phase4-event-iforest-v1) — model artifact is missing'));
+
+  const flagged = dashboard('http:', {sample: evidencePayload(evidenceRows(), evidenceIntel({
+    anomaly: {event_id: 0, status: 'available', model_version: 'phase4-event-iforest-v1', anomaly_score: 0.42, anomaly_flag: true},
+    model: {status: 'available', version: 'phase4-event-iforest-v1', reason: null}}))});
+  await flagged.elements.get('bSample').listeners.click();
+  flagged.elements.get('tb').children[0].listeners.click();
+  const ft = evidenceText(flagged.elements);
+  assert.ok(ft.includes('Anomaly indicator: Anomaly flagged'));
+  assert.ok(ft.includes('Anomaly model: Available (phase4-event-iforest-v1)'));
+  assert.ok(ft.includes('not a fire probability'));
+
+  const notFlagged = dashboard('http:', {sample: evidencePayload(evidenceRows(), evidenceIntel({
+    anomaly: {event_id: 0, status: 'available', model_version: 'phase4-event-iforest-v1', anomaly_score: -0.1, anomaly_flag: false}}))});
+  await notFlagged.elements.get('bSample').listeners.click();
+  notFlagged.elements.get('tb').children[0].listeners.click();
+  assert.ok(evidenceText(notFlagged.elements).includes('Anomaly indicator: No anomaly flagged by this model'));
+
+  const incompatible = dashboard('http:', {sample: evidencePayload(evidenceRows(), evidenceIntel({
+    model: {status: 'unavailable', version: 'phase4-event-iforest-v1', reason: 'event features are incompatible with model'}}))});
+  await incompatible.elements.get('bSample').listeners.click();
+  incompatible.elements.get('tb').children[0].listeners.click();
+  assert.ok(evidenceText(incompatible.elements).includes('event features are incompatible with model'));
+});
+
+test('evidence panel works for event id 0', async () => {
+  const {elements} = dashboard('http:', {sample: evidencePayload()});
+  await elements.get('bSample').listeners.click();
+  pick(elements, '0');
+  assert.equal(elements.get('timelineEvent').value, '0');
+  assert.ok(evidenceText(elements).includes('Event review priority: 80.00 / 100'));
+});
+
+test('evidence panel stays synchronized with the timeline and priority breakdown', async () => {
+  const {elements, document} = dashboard('http:', {sample: evidencePayload()});
+  await elements.get('bSample').listeners.click();
+  pick(elements, '0');
+  assert.ok(entries(elements).length === 3);
+  const item = entries(elements)[1], key = item.dataset.key, btn = buttonFor(item);
+  btn.focus();
+  btn.listeners.click();
+  assert.ok(breakdownText(elements).includes('Observation review priority:'));
+  assert.ok(evidenceText(elements).includes('Supporting evidence'));
+  assert.equal(elements.get('timelineEvent').value, '0');
+  assert.equal(entries(elements).find(n => buttonFor(n) === document.activeElement).dataset.key, key);
+});
+
+test('evidence panel clears on dataset replacement', async () => {
+  const {elements} = dashboard('http:', {sample: evidencePayload(), uploaded: payload([])});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click();
+  assert.ok(evidenceText(elements).includes('Supporting evidence'));
+  await elements.get('file').listeners.change({target: {files: [{name: 'empty.csv'}]}});
+  const t = evidenceText(elements);
+  assert.ok(t.includes('Select an event, table row or map marker to see its supporting evidence'));
+  assert.ok(t.includes('Select an observation to classify each scoring factor'));
+  assert.equal(descendants(elements.get('evidenceContent')).filter(n => n.className === 'evidence-factor').length, 0);
+});
+
+test('evidence panel keeps the event evidence independent of table filters', async () => {
+  const {elements} = dashboard('http:', {sample: evidencePayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('frpMin').listeners.input({target: {value: '1000'}});
+  assert.equal(elements.get('mVisible').textContent, '0');
+  pick(elements, '0');
+  const t = evidenceText(elements);
+  assert.ok(t.includes('Event review priority: 80.00 / 100'));
+  assert.ok(t.includes('Trend: Insufficient data for a trend'));
+});
+
+test('evidence panel renders untrusted API text safely', async () => {
+  const rows = evidenceRows();
+  rows[0].why = '<img src=x onerror=alert(1)>';
+  rows[0].persistent_source_evidence.reason = '<img src=x onerror=alert(1)>';
+  const intel = evidenceIntel({trend: {status: 'insufficient_data', frp_change_mw: null, frp_change_fraction: null,
+    early_detections_per_time: null, late_detections_per_time: null, distinct_observation_times: 1, span_h: 0,
+    reason: '<img src=x onerror=alert(1)>', sampling_limitation: 'unknown'}});
+  const {elements, createdElements} = dashboard('http:', {sample: evidencePayload(rows, intel)});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click();
+  const t = evidenceText(elements);
+  assert.ok(t.includes('<img src=x onerror=alert(1)>'));
+  assert.ok(!createdElements.some(n => n.tagName === 'img'));
+});
+
+test('evidence panel carries status as text and preserves timeline keyboard focus', async () => {
+  const {elements, document} = dashboard('http:', {sample: evidencePayload()});
+  await elements.get('bSample').listeners.click();
+  pick(elements, '0');
+  assert.ok(evidenceText(elements).includes('Trend: Insufficient data for a trend')); // meaning is in the text, not colour alone
+  const item = entries(elements)[0], key = item.dataset.key, oldButton = buttonFor(item);
+  oldButton.focus();
+  oldButton.listeners.click();
+  const replacement = buttonFor(entries(elements).find(n => n.dataset.key === key));
+  assert.notEqual(replacement, oldButton);
+  assert.equal(document.activeElement, replacement);
+});
+
+test('evidence panel makes no calibrated-probability, confirmation or spread claim', async () => {
+  const {elements} = dashboard('http:', {sample: evidencePayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click();
+  const t = evidenceText(elements);
+  assert.ok(t.includes('uncalibrated heuristic, not a fire probability'));
+  assert.ok(t.includes('do not confirm a wildfire or its cause'));
+  assert.ok(t.includes('not confirmed physical fire spread'));
+  assert.ok(!t.includes('calibrated probability'));
+  assert.ok(!t.includes('probability of fire'));
+});
+
+test('evidence panel preserves the Phase 5.2 breakdown and Phase 3 table behaviour', async () => {
+  const {elements} = dashboard('http:', {sample: evidencePayload()});
+  await elements.get('bSample').listeners.click();
+  elements.get('tb').children[0].listeners.click();
+  assert.ok(breakdownText(elements).includes('Event review priority: 80.00 / 100'));
+  assert.ok(breakdownText(elements).includes('Observation review priority: 80.00 / 100'));
+  assert.equal(elements.get('tb').children.length, 3);
+  assert.equal(elements.get('resultCount').textContent, '3 matching observations from 3 accepted observations.');
+});

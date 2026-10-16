@@ -272,3 +272,30 @@ button:focus-visible, input:focus-visible, select:focus-visible, .file-button:fo
 .timeline-list { padding-left: 22px; }
 .timeline-entry { border-left: 2px solid var(--line); padding-left: 8px; margin-bottom: 14px; }
 .timeline-entry button:disabled { color: var(--muted); text-decoration: none; cursor: default; }
+
+/* Phase 5.2: priority breakdown reuses the existing detail-card vocabulary. */
+.breakdown { margin-top: 10px; }
+.breakdown h3 { font-size: 13px; margin: 10px 0 4px; }
+.factor-list { margin-top: 6px; }
+.factor-entry { border-left: 2px solid var(--line); padding-left: 8px; margin-bottom: 10px; }
+.factor-head { margin: 0; font-weight: 600; }
+.factor-status { margin: 2px 0; font-size: 12px; font-weight: 600; }
+.factor-status.missing, .factor-status.unavailable { color: var(--muted); font-style: italic; }
+.tie-list { list-style: none; padding-left: 0; margin: 4px 0; }
+.tie-entry { margin-bottom: 8px; }
+.tie-meta { margin: 0 0 2px; font-size: 12px; overflow-wrap: anywhere; }
+
+/* Phase 5.3: evidence and uncertainty. Status meaning is carried by text, not colour alone. */
+#evidenceContent h3 { font-size: 13px; margin: 10px 0 4px; }
+.evidence-status { margin: 4px 0; font-size: 12px; font-weight: 600; }
+.evidence-status.flagged { color: #8a3b00; }
+.evidence-status.not-flagged, .evidence-status.ok { color: var(--ink); }
+.evidence-status.insufficient { color: #7a5a00; }
+.evidence-status.unavailable { color: var(--muted); font-style: italic; }
+.evidence-factor { margin: 2px 0; font-size: 12px; }
+.evidence-factor.present { color: var(--ink); }
+.evidence-factor.zero { color: var(--ink); }
+.evidence-factor.missing { color: #7a5a00; }
+.evidence-factor.unavailable { color: var(--muted); font-style: italic; }
+.uncertainty-list { margin: 4px 0 0; padding-left: 18px; }
+.uncertainty-list li { margin-bottom: 4px; font-size: 12px; color: var(--muted); }
