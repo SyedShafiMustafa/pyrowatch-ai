@@ -2,32 +2,216 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Fire Triage | Observation Review</title>
+  <meta name="color-scheme" content="dark">
+  <title>PyroWatch Command Deck | Thermal anomaly triage</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">FT</span><div><p class="eyebrow">FIELD INTELLIGENCE</p><h1>Fire Triage</h1></div></div><div class="connection"><i id="connectionDot" class="status-dot" aria-hidden="true"></i><span id="connectionStatus" role="status">Checking API…</span></div></header>
-  <main>
-    <section class="scope-warning" aria-label="Scope warning"><strong>Review support only</strong><p>Satellite thermal anomalies are unconfirmed observations. This dashboard prioritizes records for analyst review; it does not confirm fires or predict fire behavior.</p></section>
-    <section class="source-panel panel" aria-labelledby="sourceHeading"><div><p class="eyebrow">ACTIVE DATASET</p><h2 id="sourceHeading">Data source &amp; ingestion</h2><p id="provenance" class="provenance">No dataset loaded.</p><p id="datasetMessage" class="muted" role="status" aria-live="polite">Load the synthetic sample or upload a CSV to begin.</p></div><div class="source-actions"><button id="bSample" class="button primary" type="button">Load synthetic sample</button><label class="button secondary file-button" for="file">Choose CSV</label><input id="file" type="file" accept=".csv,text/csv" aria-describedby="fileHelp"><span id="fileHelp" class="help">UTF-8 CSV with required detection columns.</span></div><div class="ingestion-grid" id="ingestionSummary" aria-label="Ingestion summary"></div></section>
-    <section class="metrics" aria-label="Dataset summary"><article class="metric"><span>Total input records</span><strong id="mTotal">—</strong></article><article class="metric"><span>Accepted</span><strong id="mAccepted">—</strong></article><article class="metric"><span>Rejected</span><strong id="mRejected">—</strong></article><article class="metric"><span>Deduplicated</span><strong id="mDuplicates">—</strong></article><article class="metric"><span>Events supplied</span><strong id="mEvents">—</strong></article><article class="metric"><span>Visible observations</span><strong id="mVisible">—</strong></article></section>
-    <div class="workspace-grid">
-      <aside class="filter-panel panel" aria-labelledby="filterHeading"><div class="section-heading"><div><p class="eyebrow">EXPLORE</p><h2 id="filterHeading">Search &amp; filters</h2></div><button type="button" id="resetFilters" class="text-button">Reset</button></div>
-        <label for="search">Search observations</label><input id="search" type="search" placeholder="Time, satellite, event, explanation…">
-        <label for="confidenceMin">Minimum normalized confidence <output id="confidenceValue">0.00</output></label><input id="confidenceMin" type="range" min="0" max="1" step="0.05" value="0"><small>Uses the normalized value returned by the API.</small>
-        <label for="frpMin">Minimum FRP value</label><input id="frpMin" type="number" min="0" step="any" placeholder="No minimum"><small>API unit metadata is unavailable; values are shown as received.</small>
-        <div class="two-inputs"><div><label for="fromDate">From date (UTC)</label><input id="fromDate" type="date"></div><div><label for="toDate">To date (UTC)</label><input id="toDate" type="date"></div></div>
-        <label for="satelliteFilter">Satellite / instrument</label><select id="satelliteFilter"><option value="">All available</option></select>
-        <label for="daynightFilter">Day / night</label><select id="daynightFilter"><option value="">All available</option><option value="day">Day (D / day)</option><option value="night">Night (N / night)</option><option value="unknown">Unavailable / other</option></select>
-        <label class="check-label"><input id="staticOnly" type="checkbox"> Possible static source only</label>
-        <label for="eventFilter">Event</label><select id="eventFilter"><option value="">All events</option></select>
-        <label for="sortBy">Sort observations</label><select id="sortBy"><option value="score">Review priority (high to low)</option><option value="time">Timestamp (newest first)</option><option value="frp">FRP value (high to low)</option><option value="confidence">Normalized confidence (high to low)</option><option value="satellite">Satellite (A to Z)</option></select>
-      </aside>
-      <section class="main-column"><section class="panel map-panel" aria-labelledby="mapHeading"><div class="section-heading"><div><p class="eyebrow">GEOGRAPHIC CONTEXT</p><h2 id="mapHeading">Observation map</h2></div><span class="map-legend"><i aria-hidden="true"></i> Score maps to review-priority color (0–100)</span></div><div id="mapFallback" class="map-fallback" role="status">Map is initializing. The table remains available.</div><div id="map" role="img" aria-label="Map of filtered satellite observations"></div><p class="map-note">Basemap tiles use OpenStreetMap over the internet. Scores are review-priority values, not fire probabilities.</p></section>
-        <section class="panel table-panel" aria-labelledby="tableHeading"><div class="section-heading table-title"><div><p class="eyebrow">RANKED RECORDS</p><h2 id="tableHeading">Observations</h2><p id="resultCount" class="muted">No observations loaded.</p></div><button id="exportCsv" class="button secondary" type="button" disabled>Export matching CSV</button></div><div id="emptyState" class="empty-state" hidden><strong id="emptyTitle">No observations to display.</strong><p id="emptyText">Load a dataset or adjust filters.</p><button type="button" id="clearFromEmpty" class="button secondary" hidden>Clear filters</button></div><div class="table-scroll" id="tableWrap"><table><caption class="sr-only">Satellite thermal anomaly observations matching active filters</caption><thead><tr><th scope="col">Priority</th><th scope="col">Timestamp (UTC)</th><th scope="col">Confidence</th><th scope="col">FRP*</th><th scope="col">Satellite</th><th scope="col">Event</th><th scope="col">Static source</th></tr></thead><tbody id="tb"></tbody></table></div><div class="pagination"><span id="pageInfo">—</span><button id="showMore" type="button" class="button secondary" hidden>Show more</button></div><p class="help">*FRP units are not specified in the API response.</p></section></section>
-      <aside class="details-column"><section class="panel" aria-labelledby="detailHeading"><p class="eyebrow">RECORD REVIEW</p><h2 id="detailHeading">Selected observation</h2><div id="detailContent" class="detail-content"><p class="muted">Select a table row or marker.</p></div></section><section class="panel" aria-labelledby="scoreHeading"><p class="eyebrow">EXPLAINABILITY</p><h2 id="scoreHeading">Score explanation</h2><div id="scoreContent"><p class="muted">Backend explanation appears here when a record is selected.</p></div><p class="help">Score is a review priority, not probability of fire or fire-danger rating.</p></section><section class="panel" aria-labelledby="eventsHeading"><p class="eyebrow">GROUPING</p><h2 id="eventsHeading">Events</h2><div id="eventContent"><p class="muted">Event information unavailable until a dataset is loaded.</p></div></section><section class="panel" aria-labelledby="evaluationHeading"><p class="eyebrow">MODEL EVALUATION</p><h2 id="evaluationHeading">Evaluation availability</h2><div id="evaluationContent"><p class="muted">Evaluation results unavailable from the current API.</p></div></section><section class="panel limitations"><p class="eyebrow">CAPABILITIES</p><h2>Review notes &amp; limitations</h2><p>Review-note persistence and server-side filtering are unsupported by the current API. Filters and exports apply in this browser to records returned by the API.</p></section></aside>
-    </div><div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">PW</span>
+      <div class="brand-word"><h1>PyroWatch<i>Command Deck</i></h1>
+        <p class="brand-sub">Thermal anomaly triage and observation intelligence</p></div>
+    </div>
+    <div class="topbar-status" aria-label="Dataset status">
+      <p class="chip" id="provenance" title="Provenance reported by the backend">No dataset loaded.</p>
+      <p class="chip connection" title="Backend API status"><i id="connectionDot" class="status-dot" aria-hidden="true"></i><span id="connectionStatus" role="status">Checking API&#8230;</span></p>
+      <p class="dataset-note" id="datasetMessage" role="status" aria-live="polite">Load a dataset to begin.</p>
+    </div>
+    <div class="topbar-actions">
+      <button id="toggleFilters" class="ghost-button filter-toggle" type="button" aria-expanded="false" aria-controls="filterRail" title="Show filters"><span aria-hidden="true">☷</span> Filters <span id="activeFilterCount" class="filter-count">0</span></button>
+      <button id="openPalette" class="ghost-button" type="button" aria-haspopup="dialog" aria-controls="palette" title="Command palette (Ctrl+K)">Commands <kbd>Ctrl K</kbd></button>
+      <button id="bSample" class="action-button" type="button">Load synthetic sample</button>
+      <label class="action-button file-button" for="file">Upload CSV</label>
+      <input id="file" type="file" accept=".csv,text/csv" aria-describedby="fileHelp">
+      <span id="fileHelp" class="help">UTF-8 CSV with the required observation columns.</span>
+    </div>
+  </header>
+
+  <section class="statusband" aria-label="Dataset summary">
+    <p class="scope-warning"><strong>Review support only.</strong> This deck prioritizes satellite thermal anomalies for analyst review. Detections are unconfirmed observations; nothing here confirms a fire or predicts fire behavior.</p>
+    <dl class="metrics">
+      <div><dt>Input records</dt><dd id="mTotal">&mdash;</dd></div>
+      <div><dt>Accepted</dt><dd id="mAccepted">&mdash;</dd></div>
+      <div><dt>Rejected</dt><dd id="mRejected">&mdash;</dd></div>
+      <div><dt>Deduplicated</dt><dd id="mDuplicates">&mdash;</dd></div>
+      <div><dt>Events</dt><dd id="mEvents">&mdash;</dd></div>
+      <div><dt>Visible</dt><dd id="mVisible">&mdash;</dd></div>
+    </dl>
+  </section>
+
+  <main class="deck" id="deck">
+
+    <aside class="deck-col rail" id="filterRail" aria-label="Search, filters and sorting" hidden>
+      <div class="rail-content">
+      <section class="panel" aria-labelledby="filterHeading">
+        <div class="panel-head"><h2 id="filterHeading">Find</h2>
+          <div class="rail-actions"><button type="button" id="resetFilters" class="text-button">Reset all</button><button type="button" id="closeFilters" class="text-button filter-close" aria-label="Close filters">Close</button></div></div>
+        <label class="field-label" for="search">Search observations</label>
+        <input id="search" type="search" placeholder="Time, satellite, event, explanation&#8230;">
+        <h3 class="panel-sub">Filter</h3>
+        <label class="field-label" for="confidenceMin">Min normalized confidence <output id="confidenceValue">0.00</output></label>
+        <input id="confidenceMin" type="range" min="0" max="1" step="0.05" value="0">
+        <label class="field-label" for="frpMin">Min FRP value</label>
+        <input id="frpMin" type="number" min="0" step="any" inputmode="decimal" placeholder="No minimum">
+        <div class="two-inputs">
+          <div><label class="field-label" for="fromDate">From date (UTC)</label><input id="fromDate" type="date"></div>
+          <div><label class="field-label" for="toDate">To date (UTC)</label><input id="toDate" type="date"></div>
+        </div>
+        <label class="field-label" for="satelliteFilter">Satellite / instrument</label>
+        <select id="satelliteFilter"><option value="">All available</option></select>
+        <label class="field-label" for="daynightFilter">Day / night acquisition</label>
+        <select id="daynightFilter"><option value="">All available</option><option value="day">Day (D / day)</option><option value="night">Night (N / night)</option><option value="unknown">Unavailable / other</option></select>
+        <label class="check-label"><input id="staticOnly" type="checkbox"> Possible persistent-source flag only</label>
+        <label class="field-label" for="eventFilter">Event</label>
+        <select id="eventFilter"><option value="">All events</option></select>
+        <label class="field-label" for="sortBy">Sort observations</label>
+        <select id="sortBy">
+          <option value="score">Review priority (high to low)</option>
+          <option value="time">Timestamp (newest first)</option>
+          <option value="frp">FRP value (high to low)</option>
+          <option value="confidence">Normalized confidence (high to low)</option>
+          <option value="satellite">Satellite (A to Z)</option>
+        </select>
+      </section>
+
+      <section class="panel" id="weightsPanel" aria-labelledby="weightsHeading" hidden>
+        <div class="panel-head"><h2 id="weightsHeading">Exploratory weighting</h2>
+          <button type="button" id="weightsReset" class="text-button">Reset weights</button></div>
+        <p class="panel-intro">Slide to recombine the server-computed rating factors in your browser. The official API score is always shown next to it and never changes.</p>
+        <label class="check-label"><input id="weightsOn" type="checkbox"> Use exploratory score for ordering</label>
+        <div class="weight-row"><span class="weight-key">Recency</span><input id="wRecency" type="range" min="0" max="0.8" step="0.01"><output id="wRecencyOut">0.25</output></div>
+        <div class="weight-row"><span class="weight-key">Confidence</span><input id="wConfidence" type="range" min="0" max="0.8" step="0.01"><output id="wConfidenceOut">0.20</output></div>
+        <div class="weight-row"><span class="weight-key">FRP</span><input id="wFrp" type="range" min="0" max="0.8" step="0.01"><output id="wFrpOut">0.25</output></div>
+        <div class="weight-row"><span class="weight-key">Repeats</span><input id="wRepeats" type="range" min="0" max="0.8" step="0.01"><output id="wRepeatsOut">0.20</output></div>
+        <div class="weight-row"><span class="weight-key">Brightness</span><input id="wBrightness" type="range" min="0" max="0.8" step="0.01"><output id="wBrightnessOut">0.10</output></div>
+        <p id="weightsNote" class="panel-note">Factors are computed by the backend at load time (recency half-life, log-FRP reference, repeat window and confidence normalization are fixed server rules). Reweighting here is an exploration aid, not a retrained or recalibrated model.</p>
+      </section>
+
+      </div>
+    </aside>
+
+    <section class="deck-col center" aria-label="Map, timeline and ranking">
+
+      <section class="panel map-card" aria-labelledby="mapHeading">
+        <div class="panel-head">
+          <div><h2 id="mapHeading">Observation map</h2><span class="map-legend"><i class="legend-ramp" aria-hidden="true"></i><span>Marker color = review-priority score (0 to 100), not a fire probability</span></span></div>
+          <div class="seg" role="group" aria-label="Map mode">
+            <button id="modeSample" class="seg-btn is-active" type="button" aria-pressed="true">Priority map</button>
+            <button id="modeDuel" class="seg-btn" type="button" aria-pressed="false" aria-controls="duelWrap">Duel compare</button>
+          </div>
+        </div>
+        <div class="map-stage">
+          <div id="map" role="img" aria-label="Map of filtered satellite observations"></div>
+          <div id="mapEmptyState" class="map-empty-state" role="status"><span class="map-empty-mark" aria-hidden="true">⌖</span><strong>Geospatial workspace</strong><span id="mapEmptyMessage">Load the synthetic sample or upload observations to plot coordinate-valid records.</span><small>Thermal anomalies are unconfirmed satellite observations.</small></div>
+          <div id="duelWrap" class="duel-wrap" hidden role="region" aria-label="Side-by-side ranking comparison">
+            <div class="duel-col"><p class="duel-cap duel-cap-left">Triage ranking (official score)</p><div id="mapLeft" class="duel-mapslot"></div></div>
+            <div class="duel-col"><p class="duel-cap duel-cap-right">FRP-only baseline (same records)</p><div id="mapRight" class="duel-mapslot"></div></div>
+            <div id="duelNote" class="duel-note"></div>
+            <div id="duelListContent" class="duel-list" hidden></div>
+          </div>
+        </div>
+        <div id="mapFallback" class="map-fallback" role="status">Map is initializing. The ranking list remains available.</div>
+        <p class="panel-note" id="mapNote">Dark CARTO basemap (internet; OpenStreetMap fallback). Duel view overlays numbered rank badges on the top 25 of each ordering.</p>
+        <div id="compareExplain" class="compare-explain" hidden></div>
+      </section>
+
+      <section class="panel timeline-card" aria-labelledby="tlHeading">
+        <div class="panel-head">
+          <div><h2 id="tlHeading">Timeline</h2><p class="timeline-status"><span id="tlLabel" class="mono">Cursor at end of dataset</span><span id="tlElapsed" class="muted"></span></p></div>
+          <div class="timeline-controls">
+            <button id="tlPlay" class="icon-button" type="button" aria-pressed="false" title="Play through observation times">Play</button>
+            <button id="tlReset" class="icon-button" type="button" title="Move the cursor to the latest observation">Jump to end</button>
+          </div>
+        </div>
+        <div id="timelinePanel" class="timeline-panel">
+          <label class="sr-only" for="tlRange">Observation time cursor</label>
+          <div id="timelineDensity" class="timeline-density" aria-hidden="true"></div>
+          <input id="tlRange" type="range" min="0" max="0" value="0" step="1" aria-describedby="tlNote">
+          <div class="timeline-scale" id="tlScale" aria-hidden="true"></div>
+        </div>
+        <p class="panel-note" id="tlNote">Playback steps through acquisition times actually present in the data. No path is drawn between observations and no position is interpolated.</p>
+      </section>
+
+      <section class="panel table-card" aria-labelledby="tableHeading">
+        <div class="panel-head table-title">
+          <div><h2 id="tableHeading">Ranked observations</h2><p id="resultCount" class="muted">No observations loaded.</p></div>
+          <button id="exportCsv" class="action-button small" type="button" disabled>Export matching CSV</button>
+        </div>
+        <div id="emptyState" class="empty-state" hidden>
+          <strong id="emptyTitle">No observations to display.</strong>
+          <p id="emptyText">Load a dataset or adjust filters.</p>
+          <button type="button" id="clearFromEmpty" class="action-button" hidden>Clear filters</button>
+        </div>
+        <div class="table-scroll" id="tableWrap" tabindex="0" aria-label="Ranked observation list, J and K move selection">
+          <table><caption class="sr-only">Satellite thermal anomaly observations matching active filters</caption>
+            <thead><tr>
+              <th scope="col" class="col-rank hd-num">#</th>
+              <th scope="col" class="col-priority">Priority</th>
+              <th scope="col">Timestamp (UTC)</th>
+              <th scope="col" class="hd-num">Conf</th>
+              <th scope="col" class="hd-num">FRP</th>
+              <th scope="col">Satellite</th>
+              <th scope="col">Event</th>
+              <th scope="col">Static</th>
+              <th scope="col">Note</th>
+            </tr></thead>
+            <tbody id="tb"></tbody>
+          </table>
+        </div>
+        <div class="pagination"><span id="pageInfo">&mdash;</span><button id="showMore" type="button" class="action-button small" hidden>Show more</button></div>
+      </section>
+    </section>
+
+    <aside class="deck-col side" aria-label="Dossier, evaluation and ingestion">
+      <section class="panel" aria-labelledby="detailHeading">
+        <div class="panel-head"><h2 id="detailHeading">Selected observation</h2></div>
+        <div id="detailContent"><p class="panel-note">Select a table row or a marker.</p></div>
+      </section>
+      <section class="panel" aria-labelledby="scoreHeading">
+        <div class="panel-head"><h2 id="scoreHeading">Score composition</h2></div>
+        <div id="scoreContent"><p class="panel-note">Server-reported contribution breakdown appears here when a record is selected.</p></div>
+        <p class="help">Values are review-priority contributions, not probabilities.</p>
+      </section>
+      <section class="panel" aria-labelledby="dossierHeading">
+        <div class="panel-head"><h2 id="dossierHeading">Event dossier</h2></div>
+        <div id="dossierContent"><p class="panel-note">Open an event dossier from the Events list, a marker popup or the command palette.</p></div>
+      </section>
+      <details class="side-disclosure" id="eventsPanel">
+        <summary><span>Events</span><span class="count-hint" id="eventCount"></span></summary>
+        <div id="eventContent"><p class="panel-note">Event information unavailable until a dataset is loaded.</p></div>
+      </details>
+      <details class="side-disclosure">
+        <summary>Evaluation</summary>
+        <div id="evaluationContent"><p class="panel-note">Evaluation results unavailable from the current API.</p></div>
+      </details>
+      <details class="side-disclosure">
+        <summary><span id="ingestionHeading">Ingestion report</span><span id="ingestXray" class="xray-badge" hidden>Scanning</span></summary>
+        <div id="ingestionSummary" class="ingestion-grid" aria-label="Ingestion summary"></div>
+        <p class="help" id="xrayNote">Counts come from the backend ingestion report. The scanning indicator only reflects the upload in progress; it reports nothing about each record until the server answers.</p>
+      </details>
+      <details class="side-disclosure limitations">
+        <summary>Review notes and limits</summary>
+        <p>Local analyst annotations are unavailable because the API does not provide a stable observation identifier. No analyst label is saved or sent to the server.</p>
+        <p>Observation selection uses a response-local composite key. It is not a persistent identity across uploads.</p>
+      </details>
+    </aside>
   </main>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script><script src="app.js"></script>
-</body></html>
+
+  <div id="toasts" class="toasts" role="region" aria-label="Notifications" aria-live="polite"></div>
+
+  <div id="palette" class="palette" role="dialog" aria-modal="true" aria-label="Command palette" hidden>
+    <div class="palette-backdrop" data-palette-close></div>
+    <div class="palette-box">
+      <input id="paletteInput" type="search" placeholder="Type a command, event id or place to jump&#8230;" aria-label="Search commands">
+      <ul id="paletteList" class="palette-list"></ul>
+    </div>
+  </div>
+
+  <p id="announcement" class="sr-only" role="status" aria-live="polite"></p>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="app.js" defer></script>
+</body>
+</html>

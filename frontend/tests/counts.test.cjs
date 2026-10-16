@@ -17,41 +17,58 @@ class Element {
     this.hidden = false;
     this.disabled = false;
     this.rows = this.children;
+    this.tagName = '';
   }
   addEventListener(name, fn) { this.listeners[name] = fn; }
   append(...nodes) { this.children.push(...nodes); }
   add(node) { this.children.push(node); }
   click() { this.clicked = true; }
   replaceChildren(...nodes) { this.children = nodes; this.rows = nodes; }
-  setAttribute() {}
+  setAttribute(name, value) { this[name] = value; }
+  hasAttribute(name) { return Object.hasOwn(this, name); }
   scrollIntoView() {}
+  focus() { this.focused = true; if(this.ownerDocument)this.ownerDocument.activeElement=this; }
+  querySelectorAll(selector) {
+    const children = this.children.flatMap(child => [child, ...(child.querySelectorAll?.('*') || [])]);
+    if(selector==='*')return children;
+    if(selector==='.event-history-row')return children.filter(child=>child.className==='event-history-row');
+    if(selector==='button')return children.filter(child=>child.tagName==='button');
+    return [];
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  remove() { this.removed = true; }
+  get lastChild() { return this.children.at(-1); }
   get options() { return this.children; }
 }
 
-function dashboard(protocol = 'http:') {
+function dashboard(sampleOverride = null, protocol = 'http:') {
   const elements = new Map();
   const calls = [];
   const blobs = [];
   const createdElements = [];
+  const documentListeners = {};
   const sample = {
     issues: ['schema warning', 'duplicate notice'],
     rows: [{
       latitude: -33, longitude: 150, time: '2026-10-10T00:00:00Z',
       satellite: 'N20', instrument: 'VIIRS', confidence_raw: 'h',
-      confidence: 1, frp: 5, score: 62, why: 'backend explanation',
-      repeat_count: 0, source_line: 2, source_fields: {}, possible_static_source: false,
-      persistent_source_status: 'insufficient_history', event_id: 7
+      confidence: 1, frp: 5, score: 62, why: 'backend explanation', event_id: 7,
+      f_recency: 0.2, f_confidence: 1, f_frp: 0.3, f_repeats: 0, f_brightness: 0.4,
+      c_recency: 5, c_confidence: 20, c_frp: 7.5, c_repeats: 0, c_brightness: 4,
+      repeat_count: 0, source_line: 2, source_fields: {}, possible_static_source: false
     }],
-    events: [{event_id: 7, pixels: 1, top_score: 62, peak_frp: 5,
-      first_seen: '2026-10-10T00:00:00Z', last_seen: '2026-10-10T00:00:00Z', duration_h: 0,
-      lat: -33, lon: 150}],
+    events: [{event_id: 7, pixels: 1, first_seen: '2026-10-10T00:00:00Z', last_seen: '2026-10-10T00:00:00Z', top_score: 62, peak_frp: 5, lat: -33, lon: 150}],
     intelligence: {
-      model: {status: 'unavailable', version: 'phase4-event-iforest-v1', reason: 'model artifact is missing'},
-      events: [{event_id: 7,
-        trend: {status: 'insufficient_data', reason: 'need at least three valid-FRP acquisition times'},
-        anomaly: {status: 'unavailable', model_version: 'phase4-event-iforest-v1', anomaly_score: null, anomaly_flag: null}}]
+      model: {status: 'unavailable', reason: 'model artifact is missing'},
+      events: [{event_id: 7, features: {detection_count: 1}, trend: {status: 'insufficient_data', reason: 'not enough acquisition times', span_h: 0}, anomaly: {status: 'unavailable', anomaly_score: null}}]
     },
-    evaluation: null,
+    weights: {recency: 0.25, confidence: 0.2, frp: 0.25, repeats: 0.2, brightness: 0.1},
+    evaluation: {
+      triage_score: {'p@10': 0.7, 'p@25': 0.6},
+      frp_only: {'p@10': 0.6, 'p@25': 0.5},
+      n_labelled: 20,
+      interpretation: 'descriptive ranking check; labels require independent provenance'
+    },
     ingestion: {
       total_records: 3, accepted: 1, rejected: 1, deduplicated: 1,
       physical_lines: 4, columns: ['latitude', 'longitude'],
@@ -63,12 +80,13 @@ function dashboard(protocol = 'http:') {
       data_kind: 'synthetic'
     }
   };
+  const samplePayload = sampleOverride || sample;
   const uploaded = {
     ...sample,
     rows: [
       {...sample.rows[0], confidence_raw: '=1+1', why: '=2+2, \"quoted\"'},
-      {...sample.rows[0], latitude: -34, longitude: 151, time: '2026-10-11T00:00:00Z', satellite: 'N20', source_line: 3},
-      {...sample.rows[0], latitude: -35, longitude: 152, time: '2026-10-12T00:00:00Z', satellite: 'N21', source_line: 4}
+      {...sample.rows[0], latitude: -34, longitude: 151, time: '2026-10-11T00:00:00Z', satellite: 'N20', source_line: 3, score: 70, f_frp: 0.9},
+      {...sample.rows[0], latitude: -35, longitude: 152, time: '2026-10-12T00:00:00Z', satellite: 'N21', source_line: 4, score: 60, f_frp: 0.1}
     ],
     ingestion: {
       ...sample.ingestion,
@@ -85,20 +103,25 @@ function dashboard(protocol = 'http:') {
   class Form {
     append(name, value) { this[name] = value; }
   }
-  const context = vm.createContext({
-    document: {
+  const testDocument = {
+      activeElement: null,
+      addEventListener(name, fn) { documentListeners[name] = fn; },
+      createTextNode(text) { return {textContent: text}; },
       getElementById(id) {
-        if (!elements.has(id)) elements.set(id, new Element());
+        if (!elements.has(id)) { const node=new Element(); node.ownerDocument=testDocument; elements.set(id,node); }
         return elements.get(id);
       },
       createElement(tagName) {
         const element = new Element();
+        element.ownerDocument=testDocument;
         element.tagName = tagName;
         createdElements.push(element);
         return element;
       }
-    },
-    window: {location: {protocol}},
+    };
+  const context = vm.createContext({
+    document: testDocument,
+    window: {location: {protocol, port: protocol==='file:'?'':'8010', origin: protocol==='file:'?'null':'http://127.0.0.1:8010'}},
     Option: class { constructor(text, value) { this.textContent = text; this.value = value; } },
     FormData: Form,
     URL: Object.assign(class extends URL {}, {
@@ -112,7 +135,7 @@ function dashboard(protocol = 'http:') {
     fetch: async (url, options = {}) => {
       const target = String(url);
       calls.push({url: target, options});
-      if (target.endsWith('/api/sample')) return jsonResponse(sample);
+      if (target.endsWith('/api/sample')) return jsonResponse(samplePayload);
       if (target.endsWith('/api/upload')) {
         return options.body.file.name === 'invalid.csv'
           ? jsonResponse({detail: 'Upload must be UTF-8 CSV'}, 400)
@@ -121,8 +144,10 @@ function dashboard(protocol = 'http:') {
       return jsonResponse({ok: true});
     }
   });
+  elements.set('filterRail', new Element());
+  elements.get('filterRail').hidden = true;
   vm.runInContext(source, context);
-  return {elements, calls, blobs, createdElements};
+  return {elements, calls, blobs, createdElements, documentListeners, document: testDocument};
 }
 
 test('dashboard health, sample, and upload use the configured backend and render API ingestion counts', async () => {
@@ -137,11 +162,15 @@ test('dashboard health, sample, and upload use the configured backend and render
   assert.equal(elements.get('mDuplicates').textContent, '1');
   assert.equal(elements.get('mTotal').textContent, '3');
   assert.equal(elements.get('mVisible').textContent, '1');
-  assert.equal(elements.get('tb').children[0].children[6].textContent, 'Insufficient history');
-  const displayed = createdElements.map(element => element.textContent).filter(Boolean).join('\n');
-  assert.match(displayed, /Model anomaly analysis: unavailable: model artifact is missing/);
-  assert.match(displayed, /Observed FRP trend: insufficient_data/);
-  assert.match(displayed, /Anomaly indicator: unavailable \(phase4-event-iforest-v1\)/);
+  assert.equal(elements.get('timelineDensity').children.length, 1, 'timeline density uses the sample acquisition timestamp');
+  assert.equal(elements.get('mapEmptyState').hidden, true, 'coordinate-valid observations reveal the map');
+
+  await elements.get('toggleFilters').listeners.click();
+  assert.equal(elements.get('filterRail').hidden, false, 'filter rail opens on demand');
+  assert.equal(elements.get('toggleFilters')['aria-expanded'], 'true');
+  await elements.get('closeFilters').listeners.click();
+  assert.equal(elements.get('filterRail').hidden, true, 'filter rail closes on demand');
+  assert.equal(elements.get('toggleFilters')['aria-expanded'], 'false');
 
   const file = {name: 'valid.csv'};
   await elements.get('file').listeners.change({target: {files: [file]}});
@@ -151,6 +180,33 @@ test('dashboard health, sample, and upload use the configured backend and render
   assert.equal(elements.get('mRejected').textContent, '0');
   assert.equal(elements.get('mDuplicates').textContent, '0');
   assert.equal(elements.get('mVisible').textContent, '3');
+  assert.equal(elements.get('tlRange').max, '2');
+  assert.equal(elements.get('tb').children[0].children.length, 9);
+
+  elements.get('tlRange').value = '0';
+  elements.get('tlRange').listeners.input({target: elements.get('tlRange')});
+  assert.equal(elements.get('mVisible').textContent, '1', 'timeline scrubbing limits the shared dataset');
+  elements.get('tlRange').value = '2';
+  elements.get('tlRange').listeners.input({target: elements.get('tlRange')});
+  assert.equal(elements.get('mVisible').textContent, '3', 'moving to the final acquisition restores all dated rows');
+
+  elements.get('eventContent').children[0].listeners.click();
+  assert.ok(elements.get('dossierContent').children.length > 0);
+  assert.ok(elements.get('dossierContent').children.some(child => child.textContent === 'Anomaly indicator'));
+  assert.ok(elements.get('dossierContent').children.some(child => child.textContent === 'Unavailable'));
+
+  elements.get('modeDuel').listeners.click();
+  assert.equal(elements.get('duelWrap').hidden, false);
+  assert.equal(elements.get('duelListContent').hidden, false, 'comparison falls back to rankings when Leaflet is unavailable');
+  assert.match(elements.get('duelNote').children[0].textContent, /Top-25 overlap/);
+
+  elements.get('openPalette').listeners.click();
+  assert.equal(elements.get('palette').hidden, false);
+  elements.get('paletteInput').value = 'Compare triage';
+  elements.get('paletteInput').listeners.input();
+  elements.get('paletteList').children[0].children[1].listeners.click();
+  assert.equal(elements.get('palette').hidden, true);
+  assert.equal(elements.get('duelWrap').hidden, false, 'palette command performs its advertised action');
 
   const preservedCount = elements.get('resultCount').textContent;
   const invalidFile = {name: 'invalid.csv'};
@@ -188,12 +244,101 @@ test('dashboard health, sample, and upload use the configured backend and render
   assert.equal(calls[3].options.body.file, invalidFile);
 });
 
-test('file URL explains that the dashboard must be served over HTTP', async () => {
-  const {elements, calls} = dashboard('file:');
+test('empty responses without optional Phase 4 fields render safely', async () => {
+  const {elements} = dashboard({
+    rows: [],
+    issues: [],
+    ingestion: {total_records: 0, accepted: 0, rejected: 0, deduplicated: 0, data_kind: 'user_supplied_unverified'}
+  });
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(elements.get('connectionStatus').textContent, 'API unavailable');
-  assert.match(elements.get('datasetMessage').textContent, /opened as a local file.*http:\/\/127\.0\.0\.1:8010\//);
   await elements.get('bSample').listeners.click();
-  assert.match(elements.get('datasetMessage').textContent, /opened as a local file/);
-  assert.equal(calls.length, 0);
+  assert.equal(elements.get('mVisible').textContent, '0');
+  assert.equal(elements.get('timelineDensity').children.length, 0);
+  assert.equal(elements.get('mapEmptyState').hidden, false, 'empty datasets show the geospatial empty state');
+  assert.equal(elements.get('tlRange').disabled, true);
+  assert.equal(elements.get('weightsPanel').hidden, true);
+  assert.match(elements.get('evaluationContent').children[0].textContent, /No labelled evaluation/i);
+  assert.match(elements.get('eventContent').children[0].textContent, /No event records/i);
+});
+
+
+test('file URL gives HTTP guidance without contacting the API', async () => {
+  const {elements,calls}=dashboard(null,'file:');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(elements.get('connectionStatus').textContent,'API unavailable');
+  assert.match(elements.get('datasetMessage').textContent,/Open the dashboard over HTTP/);
+  await elements.get('bSample').listeners.click();
+  assert.equal(calls.length,0);
+});
+
+const nodes = element => [element,...(element.children||[]).flatMap(nodes)];
+const textOf = element => nodes(element).map(node=>node.textContent||'').join('\n');
+const history = elements => nodes(elements.get('dossierContent')).filter(node=>node.className==='event-history-row');
+const historyButton = item => nodes(item).find(node=>node.tagName==='button');
+const specialRows = [
+  {event_id:0,time:'2026-10-12T00:00:00Z',score:70,frp:0,c_frp:0},
+  {event_id:0,time:'2026-10-10T00:00:00Z',score:70,confidence_raw:'<img src=x onerror=alert(1)>'},
+  {event_id:0,time:'2026-10-10T00:00:00Z',score:70,confidence_raw:'<img src=x onerror=alert(1)>'},
+  {event_id:0,time:'invalid',score:5},
+  {event_id:0,time:null,score:5},
+  {event_id:1,time:'2026-10-09T00:00:00Z',score:30}
+].map((row,index)=>({latitude:10,longitude:20,satellite:'N20',instrument:'VIIRS',source_line:index+2,...row}));
+const specialPayload={rows:specialRows,events:[{event_id:0,pixels:5,top_score:70},{event_id:1,pixels:1,top_score:30}],issues:[],ingestion:{accepted:6,rejected:0,deduplicated:0,total_records:6,data_kind:'synthetic'}};
+
+test('event dossier retains every row, chronological order, ties, zero and missing evidence', async () => {
+  const before=JSON.stringify(specialPayload.rows);
+  const {elements,createdElements}=dashboard(specialPayload);
+  await elements.get('bSample').listeners.click();
+  const eventZero=elements.get('eventContent').children.find(node=>textOf(node).includes('Event 0'));
+  eventZero.listeners.click();
+  const items=history(elements);
+  assert.equal(items.length,5);
+  assert.match(textOf(items[0]),/2026-10-10 00:00:00 UTC/);
+  assert.match(textOf(items[1]),/2026-10-10 00:00:00 UTC/);
+  assert.match(textOf(items[2]),/2026-10-12 00:00:00 UTC/);
+  assert.equal(new Set(items.map(item=>item.dataset.key)).size,5);
+  assert.match(textOf(elements.get('dossierContent')),/Time unavailable or invalid/);
+  assert.match(textOf(elements.get('dossierContent')),/3 observations share the reported maximum/);
+  assert.match(textOf(items[0]),/<img src=x onerror=alert\(1\)>/);
+  assert.ok(!createdElements.some(node=>node.tagName==='img'));
+  assert.equal(JSON.stringify(specialPayload.rows),before);
+  assert.equal(specialPayload.rows[0].c_frp,0);
+  assert.equal(Object.hasOwn(specialPayload.rows[1],'c_frp'),false);
+});
+
+test('history selection restores focus by key, respects filters, and ignores stale data', async () => {
+  const {elements,document}=dashboard(specialPayload);
+  await elements.get('bSample').listeners.click();
+  elements.get('frpMin').listeners.input({target:{value:'1'}});
+  const eventZero=elements.get('eventContent').children.find(node=>textOf(node).includes('Event 0'));
+  eventZero.listeners.click();
+  assert.equal(history(elements).length,5);
+  assert.equal(elements.get('mVisible').textContent,'0');
+  elements.get('frpMin').listeners.input({target:{value:''}});
+  eventZero.listeners.click();
+  const item=history(elements)[1],key=item.dataset.key,button=historyButton(item);
+  button.focus();button.listeners.click();
+  const successor=history(elements).find(node=>node.dataset.key===key);
+  assert.notEqual(historyButton(successor),button);
+  assert.equal(document.activeElement,historyButton(successor));
+  elements.get('bSample').focus();
+  await elements.get('bSample').listeners.click();
+  assert.equal(document.activeElement,elements.get('bSample'));
+  const count=history(elements).length;
+  button.listeners.click();
+  assert.equal(history(elements).length,count);
+  assert.equal(document.activeElement,elements.get('bSample'));
+});
+
+
+test('official contribution display distinguishes zero from absent fields and remains separate from exploratory mode', async () => {
+  const {elements}=dashboard(specialPayload);
+  await elements.get('bSample').listeners.click();
+  elements.get('eventContent').children.find(node=>textOf(node).includes('Event 0')).listeners.click();
+  const entries=history(elements);
+  historyButton(entries[2]).listeners.click();
+  assert.match(textOf(elements.get('scoreContent')),/frp: 0.00 score points/);
+  historyButton(history(elements)[0]).listeners.click();
+  assert.match(textOf(elements.get('scoreContent')),/frp: Contribution unavailable/);
+  assert.match(textOf(elements.get('scoreContent')),/Official review priority: 70.0 \/ 100/);
 });
