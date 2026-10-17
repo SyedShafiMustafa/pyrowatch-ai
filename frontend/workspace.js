@@ -296,7 +296,7 @@ window.PyroWorkspace = {
       text('globeStatus','Loading globe renderer…');$('modeGlobe').classList.toggle('is-active',true);$('modeGlobe').setAttribute('aria-pressed','true');$('modeSample').classList.toggle('is-active',false);$('modeSample').setAttribute('aria-pressed','false');
       try {
         await loadGlobeLibrary();if(!globeActive)return;
-        if(globe){globe.resize();renderGlobe();focusGlobe(filteredRows());text('globeStatus','Globe · NASA GIBS daily true-colour imagery. Background date may differ from detections; clouds and smoke obscure ground.');return;}
+        if(globe){globe.resize();if(globeReady){renderGlobe();focusGlobe(filteredRows());text('globeStatus','Globe · NASA GIBS daily true-colour imagery. Background date may differ from detections; clouds and smoke obscure ground.');}else text('globeStatus','Globe renderer is initializing; imagery continues loading in the background.');return;}
         globe=new window.maplibregl.Map({container:'globeMap',center:[0,10],zoom:.4,maxZoom:17,attributionControl:true,
           style:{version:8,projection:{type:'globe'},sources:{},layers:[
             {id:'background',type:'background',paint:{'background-color':'#171614'}}
@@ -311,7 +311,7 @@ window.PyroWorkspace = {
           text('globeStatus',`Globe map error: ${event.error?.message || 'a map resource could not be loaded'}. Reference tiles remain available; map tiles require an internet connection.`);
         });
         const initializeGlobe = () => {
-          if(globeSetupStarted || !globeActive)return;
+          if(globeSetupStarted)return;
           globeSetupStarted=true;
           try {
             globe.setProjection({type:'globe'});
