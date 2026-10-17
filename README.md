@@ -31,6 +31,25 @@ To serve the frontend separately for development, run
 repository root and open <http://127.0.0.1:5500/>. The API explicitly allows
 that local origin when the backend is on port 8010.
 
+## Deploy to Vercel
+
+Import this repository into Vercel with the repository root as the project root.
+Vercel reads `requirements.txt` and the `tool.vercel.entrypoint` setting in
+`pyproject.toml` to deploy `backend.app.main:app` as the Python FastAPI
+application. The root `StaticFiles` mount serves the frontend on the same
+origin; Vercel promotes its files to the CDN. `vercel.json` explicitly bundles
+the synthetic sample CSV, which the `/api/sample` route reads at runtime.
+
+No frontend API URL or secrets are required for the combined deployment. The
+dashboard uses the deployed page's origin for `/api/health`, `/api/sample`, and
+`/api/upload`. CSV uploads remain subject to Vercel's request-body limit in
+addition to the application's configured upload limit.
+
+After importing, leave the Build Command and Output Directory unset so Vercel
+uses its Python/FastAPI detection, and deploy the `feature/pyrowatch-full-integration`
+branch for a preview. Verify the deployment URL's `/`, `/api/health`, and
+`/api/sample` routes and test a small CSV upload before promoting it.
+
 Run backend tests with
 `.\.venv\Scripts\python.exe -m pytest backend/tests -q`. Run frontend tests
 from PowerShell with:
