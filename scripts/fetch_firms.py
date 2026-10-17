@@ -1,4 +1,4 @@
-"""Usage: python scripts/fetch_firms.py WEST SOUTH EAST NORTH DAYS out.csv (needs MAP_KEY in environment)."""
+"""Usage: python scripts/fetch_firms.py WEST SOUTH EAST NORTH DAYS out.csv (needs NASA_FIRMS_MAP_KEY in environment)."""
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))

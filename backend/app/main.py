@@ -1,8 +1,10 @@
 from pathlib import Path
+import hashlib
+import hmac
 import io
 import os
 import pandas as pd
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -14,9 +16,12 @@ from .evaluation import compare
 from .event_features import extract_event_features
 from .trends import analyze_trend
 from .anomaly import predict_events
+from .firms_client import fetch_area_csv
+from .live_cache import LiveAreaCache, LiveFetchBusy
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+live_area_cache = LiveAreaCache()
 
 
 def _configured_max_upload_bytes():
@@ -103,7 +108,7 @@ app.add_middleware(
     ],
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -145,6 +150,61 @@ def health():
 @app.get("/api/sample")
 def sample():
     return _pipeline((ROOT / "data" / "sample" / "synthetic_sample.csv").read_text(), "synthetic")
+
+
+@app.get("/api/firms/area")
+def fetch_live_firms_area(
+    west: float = Query(..., ge=-180, le=180),
+    south: float = Query(..., ge=-90, le=90),
+    east: float = Query(..., ge=-180, le=180),
+    north: float = Query(..., ge=-90, le=90),
+    days: int = Query(3, ge=1, le=5),
+    source: str = Query("VIIRS_SNPP_NRT"),
+    authorization: str | None = Header(default=None),
+):
+    expected_token = os.environ.get("PYROWATCH_LIVE_FETCH_TOKEN")
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="Live FIRMS fetch is not enabled on this deployment")
+    scheme, separator, supplied_token = (authorization or "").partition(" ")
+    if (not separator or scheme.lower() != "bearer" or not supplied_token
+            or not hmac.compare_digest(supplied_token.encode("utf-8"), expected_token.encode("utf-8"))):
+        raise HTTPException(
+            status_code=401,
+            detail="A valid live-fetch bearer token is required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if west >= east or south >= north:
+        raise HTTPException(status_code=422, detail="Area must have west < east and south < north")
+    if (east - west) * (north - south) > 400:
+        raise HTTPException(status_code=422, detail="Select a smaller area (at most 400 square degrees)")
+    # Partition cached data on credential rotation without storing credentials.
+    credential = (os.getenv("NASA_FIRMS_MAP_KEY") or os.getenv("MAP_KEY")
+                  or os.getenv("FIRMS_MAP_KEY") or "")
+    cache_key = (hashlib.sha256(credential.encode()).digest(), west, south, east, north, days, source)
+    try:
+        csv_text, fetched_at, cached = live_area_cache.fetch(
+            cache_key, lambda: fetch_area_csv(west, south, east, north, days, source))
+    except LiveFetchBusy as error:
+        raise HTTPException(status_code=429, detail=str(error), headers={"Retry-After": "60"}) from None
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from None
+    if len(csv_text.encode("utf-8")) > 5 * 1024 * 1024 or len(csv_text.splitlines()) > 5001:
+        raise HTTPException(status_code=413, detail="Too many live observations; reduce the area or days")
+    result = _pipeline(csv_text, "nasa_firms_live")
+    result["live_fetch"] = {
+        "source": source,
+        "west": west,
+        "south": south,
+        "east": east,
+        "north": north,
+        "days": days,
+        "fetched_at": fetched_at,
+        "cached": cached,
+        "cache_ttl_seconds": live_area_cache.ttl,
+    }
+    return result
 
 
 @app.post("/api/upload")

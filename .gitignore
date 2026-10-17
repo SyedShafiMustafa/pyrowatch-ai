@@ -1,9 +1,12 @@
 __pycache__/
 .venv/
 .env
+.vercel/
 *.pyc
 data/archive/*.csv
 .pytest_cache/
 models/*.joblib
 models/*.joblib.manifest.json
 data/validation/sample_viirs_snpp_071223_original.csv
+.vercel
+.env*

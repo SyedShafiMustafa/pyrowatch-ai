@@ -1,4 +1,4 @@
-"""Optional live pull from FIRMS Web Services. Needs MAP_KEY in the environment.
+"""Optional live pull from FIRMS Web Services. Needs a server-side API key.
 Verify the URL pattern against https://firms.modaps.eosdis.nasa.gov/web-services/ before relying on it."""
 import os
 import math
@@ -46,9 +46,10 @@ def _protect_http_logs():
 
 
 def fetch_area_csv(west, south, east, north, days=3, source="VIIRS_SNPP_NRT"):
-    key = os.getenv("MAP_KEY") or os.getenv("FIRMS_MAP_KEY")
+    key = (os.getenv("NASA_FIRMS_MAP_KEY") or os.getenv("MAP_KEY")
+           or os.getenv("FIRMS_MAP_KEY"))
     if not key:
-        raise RuntimeError("Set MAP_KEY in the environment (legacy FIRMS_MAP_KEY also supported)")
+        raise RuntimeError("NASA FIRMS credentials are not configured on this backend")
     try:
         west, south, east, north = map(float, (west, south, east, north))
     except (TypeError, ValueError):
@@ -60,7 +61,7 @@ def fetch_area_csv(west, south, east, north, days=3, source="VIIRS_SNPP_NRT"):
     if source not in {"MODIS_NRT", "MODIS_SP", "VIIRS_SNPP_NRT", "VIIRS_SNPP_SP", "VIIRS_NOAA20_NRT", "VIIRS_NOAA20_SP", "VIIRS_NOAA21_NRT"}:
         raise ValueError("Unsupported FIRMS source")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", key):
-        raise RuntimeError("Invalid MAP_KEY format")
+        raise RuntimeError("NASA FIRMS credential has an invalid format")
     url = f"{BASE}/{key}/{source}/{west},{south},{east},{north}/{days}"
     _protect_http_logs()
     token = _request_key.set(key)

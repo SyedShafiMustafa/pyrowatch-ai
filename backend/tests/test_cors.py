@@ -17,7 +17,22 @@ def test_dashboard_origins_can_read_health_and_sample():
         assert sample.headers["access-control-allow-origin"] == origin
 
 
-def test_upload_preflight_allows_required_origin_method_and_header():
+def test_dashboard_preflight_allows_upload_and_live_fetch_headers():
+    response = client.options(
+        "/api/firms/area",
+        headers={
+            "Origin": "http://127.0.0.1:5500",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5500"
+    assert "GET" in response.headers["access-control-allow-methods"]
+    assert "authorization" in response.headers["access-control-allow-headers"].lower()
+
+
+def test_upload_preflight_allows_required_content_type_header():
     response = client.options(
         "/api/upload",
         headers={

@@ -2,7 +2,7 @@
 window.PyroWorkspace = {
   create(context) {
     'use strict';
-    const {state, el, $, fmt, fmtTime, openEvent, selectObservation, setMapMode, checkHealth, upload, loadSample, announce, toast, filteredRows, render} = context;
+    const {state, el, $, fmt, fmtTime, openEvent, selectObservation, setMapMode, checkHealth, upload, loadSample, fetchLiveFirms, announce, toast, filteredRows, render} = context;
     const D = window.PyroData;
     let view = 'dashboard', reportSnapshot = null, reportSelection = null;
     let globe = null, globeLoading = null, globeActive = false, globeReady = false, globeSetupStarted = false, boundsLayer = null;
@@ -84,11 +84,27 @@ window.PyroWorkspace = {
       acquisitions.replaceChildren();priority.replaceChildren();
       if (!rows.length) {acquisitions.append(note('No matching observations. Load data or adjust the dashboard filters.'));priority.append(note('No matching scores.'));}
       else {
-        const chart=el('div','chart-bars');chart.setAttribute('role','img');chart.setAttribute('aria-label',`${summary.daily.length} UTC dates; counts available in the accessible table below.`);
-        const max=Math.max(1,...summary.daily.map(item=>item.count));
-        for (const item of summary.daily) {const bar=el('div','chart-bar');bar.style.height=`${item.count/max*100}%`;bar.title=`${item.day}: ${item.count} detections; mean FRP ${fmt(item.meanFrp)}`;bar.append(el('span','chart-value',item.count));chart.append(bar);}
-        acquisitions.append(chart);
-        const labels=el('div','chart-labels');labels.append(el('span','',summary.daily[0]?.day || 'No valid timestamps'),el('span','',summary.daily.at(-1)?.day || ''));acquisitions.append(labels);
+        const max=Math.max(0,...summary.daily.map(item=>item.count));
+        const scale=Math.pow(10,Math.floor(Math.log10(Math.max(1,max))));
+        const axisMax=Math.max(scale,Math.ceil(max/scale)*scale);
+        const midpoint=Math.floor(axisMax/2);
+        const frame=el('div','acquisition-plot');
+        const axis=el('div','chart-y-axis');axis.setAttribute('aria-hidden','true');
+        [axisMax,midpoint,0].forEach(value=>axis.append(el('span','',value)));
+        const plot=el('div','chart-plot');
+        const guides=el('div','chart-guides');guides.setAttribute('aria-hidden','true');
+        for(let i=0;i<3;i++)guides.append(el('i',''));
+        const chart=el('div','chart-bars');chart.setAttribute('role','img');chart.setAttribute('aria-label',`${summary.daily.length} UTC dates. Observation count axis from zero to ${axisMax}. Exact daily counts and FRP values are available in the table below.`);
+        const dateStride=Math.max(1,Math.ceil(summary.daily.length/8));
+        for (const [index,item] of summary.daily.entries()) {
+          const column=el('div','chart-column');
+          const bar=el('div','chart-bar');bar.style.height=`${axisMax?item.count/axisMax*100:0}%`;
+          bar.title=`${item.day}: ${item.count} detections; mean FRP ${fmt(item.meanFrp)}`;
+          bar.append(el('span','chart-value',item.count));
+          const dateLabel=el('span','chart-date',index%dateStride===0||index===summary.daily.length-1?item.day.slice(5):'');
+          dateLabel.title=item.day;column.append(bar,dateLabel);chart.append(column);
+        }
+        plot.append(guides,chart);frame.append(axis,plot);acquisitions.append(frame);
         const detail=el('details','chart-data');detail.append(el('summary','',`Inspect daily values · ${summary.undated} timestamps unavailable`),table(['UTC date','Detections','Mean FRP','FRP available'],summary.daily.map(day=>[day.day,day.count,fmt(day.meanFrp),`${day.frpCount}/${day.count}`])));acquisitions.append(detail);
         const dist=el('div','distribution'), maxScore=Math.max(1,...summary.scores);
         summary.scores.forEach((count,index)=>{const row=el('div','distribution-row'),track=el('div','distribution-track'),fill=el('i','distribution-fill');fill.style.width=`${count/maxScore*100}%`;track.append(fill);row.append(el('span','',`${index*20}–${index===4?100:index*20+19.99}`),track,el('span','',count));dist.append(row);});
@@ -131,7 +147,7 @@ window.PyroWorkspace = {
     }
     function renderContext() {
       const box=$('dataContext');box.replaceChildren();const range=D.timeRange(state.rows);
-      facts(box,[['Source kind',state.provenance],['Input filename',state.sourceName],['Response loaded',state.loadedAt],['First acquisition',range.first],['Last acquisition',range.last],['Unavailable timestamps',range.undated],['Model status',state.intelligence?.model?.status],['Model reason',state.intelligence?.model?.reason]]);
+      facts(box,[['Source kind',state.provenance],['Input filename',state.sourceName],['Response loaded',state.loadedAt],['Last NASA FIRMS fetch',state.liveFirmsFetchedAt],['First acquisition',range.first],['Last acquisition',range.last],['Unavailable timestamps',range.undated],['Model status',state.intelligence?.model?.status],['Model reason',state.intelligence?.model?.reason]]);
       const method=$('methodology');method.replaceChildren();D.limitations.forEach(value=>method.append(note(value)));
       method.append(note('Current clustering implementation bounds pairwise distances to 2 km and acquisition span to 72 h. Grouping is deterministic within a response; it is not a tracked event identity across uploads.'));
     }
@@ -365,11 +381,11 @@ window.PyroWorkspace = {
         const rows=filteredRows();if(globeActive&&globeReady&&rows.length)focusGlobe(rows);
       }
       const range=D.timeRange(state.rows);
-      text('footerSource',state.ingestion?`${state.provenance==='synthetic'?'SYNTHETIC SAMPLE':state.provenance==='user_supplied_unverified'?'UPLOADED / UNVERIFIED':'SOURCE UNKNOWN'} · ${state.rows.length} accepted`:'NO DATASET');
+      text('footerSource',state.ingestion?`${state.provenance==='synthetic'?'SYNTHETIC SAMPLE':state.provenance==='nasa_firms_live'?'NASA FIRMS LIVE':state.provenance==='user_supplied_unverified'?'UPLOADED / UNVERIFIED':'SOURCE UNKNOWN'} · ${state.rows.length} accepted`:'NO DATASET');
       text('footerRange',range.first?`${range.first.slice(0,16).replace('T',' ')} → ${range.last.slice(0,16).replace('T',' ')} UTC`:'Acquisition range unavailable');
       text('footerModel',`Anomaly model: ${state.intelligence?.model?.status || 'unavailable'}`);
       text('lastResponse',state.loadedAt?`Loaded ${state.loadedAt.slice(11,19)} UTC`:'No API data response yet');
-      $('refreshData').disabled=state.loading || !state.sourceType;$('refreshData').textContent=state.sourceType==='upload'?'Reprocess upload':'Refresh dataset';
+      $('refreshData').disabled=state.loading || !state.sourceType;$('refreshData').textContent=state.sourceType==='upload'?'Reprocess upload':state.sourceType==='firms'?'Fetch live observations again':'Refresh dataset';
       text('inspectorTitle',state.selectedEvent==null?'Select an event':`Candidate event ${state.selectedEvent}`);
       $('reportSelected').disabled=state.selectedEvent==null;$('zoomEvent').disabled=!D.bounds(selectedMembers());
       renderBounds();renderGlobe();reportControls();
@@ -379,7 +395,8 @@ window.PyroWorkspace = {
     for(const section of ['Event','Score','Observation'])on('inspect'+section,'click',()=>inspector(section));
     on('openData','click',()=>navigate('data'));on('dataSample','click',loadSample);
     on('uploadLabel','keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();$('file').click();}});
-    on('refreshData','click',()=>state.sourceType==='upload'?upload(state.sourceFile):loadSample());on('healthRefresh','click',checkHealth);
+    on('refreshData','click',()=>state.sourceType==='upload'?upload(state.sourceFile):state.sourceType==='firms'?fetchLiveFirms():loadSample());on('healthRefresh','click',checkHealth);
+    on('fetchLiveFirms','click',fetchLiveFirms);
     on('eventSearch','input',event=>{eventQuery=event.target.value;renderExplorer();});on('eventSort','change',event=>{eventOrder=event.target.value;renderExplorer();});
     for(const id of ['eventsFilters','analyticsFilters'])on(id,'click',()=>{navigate('dashboard');if($('filterRail').hidden)$('toggleFilters').click();});
     on('compareA','change',renderComparison);on('compareB','change',renderComparison);

@@ -403,6 +403,106 @@ a,
   color: var(--tx1);
 }
 
+.firms-area-fields,
+.firms-fetch-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.firms-area-fields input,
+.firms-fetch-options select {
+  width: 100%;
+  min-height: 30px;
+  margin-top: 4px;
+  padding: 5px 7px;
+}
+
+#fetchLiveFirms {
+  width: 100%;
+}
+
+.source-guide #liveFirmsStatus {
+  overflow-wrap: anywhere;
+}
+
+.acquisition-plot {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.chart-y-axis {
+  display: flex;
+  height: 170px;
+  flex-direction: column;
+  justify-content: space-between;
+  padding-bottom: 25px;
+  color: var(--tx3);
+  font: 9px var(--mono);
+  text-align: right;
+}
+
+.chart-plot {
+  position: relative;
+  min-width: 0;
+}
+
+.chart-guides {
+  position: absolute;
+  z-index: 0;
+  inset: 0 0 25px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.chart-guides i {
+  display: block;
+  border-top: 1px solid var(--line);
+}
+
+.chart-bars {
+  position: relative;
+  z-index: 1;
+  align-items: stretch;
+  height: 170px;
+  padding: 0;
+  border: 0;
+}
+
+.chart-column {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  grid-template-rows: minmax(0, 1fr) 25px;
+  text-align: center;
+}
+
+.chart-bar {
+  width: 100%;
+  min-width: 0;
+  min-height: 2px;
+  align-self: end;
+}
+
+.chart-value {
+  top: -16px;
+  color: var(--tx1);
+  font-size: 9px;
+}
+
+.chart-date {
+  overflow: hidden;
+  padding-top: 6px;
+  color: var(--tx3);
+  font: 8px var(--mono);
+  white-space: nowrap;
+}
+
 @media (min-width: 1001px) {
   .deck {
     grid-template-columns: minmax(180px, 15vw) minmax(62vw, 1fr) minmax(210px, 18vw);
@@ -426,6 +526,11 @@ a,
 }
 
 @media (max-width: 650px) {
+  .firms-area-fields,
+  .firms-fetch-options {
+    grid-template-columns: 1fr;
+  }
+
   .map-stage,
   #map,
   #globeMap {

@@ -43,7 +43,7 @@ class Element {
   get options() { return this.children; }
 }
 
-function dashboard(sampleOverride = null, protocol = 'http:', workspace = false, responseOverride = null) {
+function dashboard(sampleOverride = null, protocol = 'http:', workspace = false, responseOverride = null, port = '8010') {
   const elements = new Map();
   const calls = [];
   const blobs = [];
@@ -123,8 +123,9 @@ function dashboard(sampleOverride = null, protocol = 'http:', workspace = false,
     };
   const context = vm.createContext({
     document: testDocument,
-    window: {location: {protocol, port: protocol==='file:'?'':'8010', origin: protocol==='file:'?'null':'http://127.0.0.1:8010'}},
+    window: {location: {protocol, port: protocol==='file:'?'':port, origin: protocol==='file:'?'null':`http://127.0.0.1:${port}`}},
     Option: class { constructor(text, value) { this.textContent = text; this.value = value; } },
+    URLSearchParams,
     FormData: Form,
     URL: Object.assign(class extends URL {}, {
       createObjectURL(blob) { blobs.push(blob); return 'blob:mock-export'; },
@@ -154,7 +155,7 @@ function dashboard(sampleOverride = null, protocol = 'http:', workspace = false,
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'workspace.js'), 'utf8'), context);
   }
   vm.runInContext(source, context);
-  return {elements, calls, blobs, createdElements, documentListeners, document: testDocument};
+  return {elements, calls, blobs, createdElements, documentListeners, document: testDocument, samplePayload, jsonResponse};
 }
 
 test('dashboard health, sample, and upload use the configured backend and render API ingestion counts', async () => {
@@ -249,6 +250,13 @@ test('dashboard health, sample, and upload use the configured backend and render
   assert.equal(calls[2].options.body.file, file);
   assert.equal(calls[3].options.method, 'POST');
   assert.equal(calls[3].options.body.file, invalidFile);
+});
+
+test('separate frontend on port 5500 targets the local backend on port 8013', async () => {
+  const {elements,calls}=dashboard(null,'http:',false,null,'5500');
+  await elements.get('bSample').listeners.click();
+  assert.ok(calls.some(call=>call.url==='http://127.0.0.1:8013/api/health'));
+  assert.ok(calls.some(call=>call.url==='http://127.0.0.1:8013/api/sample'));
 });
 
 test('empty responses without optional Phase 4 fields render safely', async () => {
@@ -384,6 +392,9 @@ test('workspace analytics, event comparison, navigation and dataset report use s
   assert.equal(elements.get('viewAnalytics').hidden,false);
   assert.equal(elements.get('deck').hidden,true);
   assert.match(textOf(elements.get('acquisitionChart')),/2026-10-10/);
+  const acquisitionBars=nodes(elements.get('acquisitionChart')).find(node=>node.className==='chart-bars');
+  assert.match(acquisitionBars['aria-label'],/Observation count axis from zero to 1/);
+  assert.equal(nodes(elements.get('acquisitionChart')).find(node=>node.className==='chart-date').textContent,'10-10');
   assert.match(textOf(elements.get('eventComparison')),/unavailable/i);
   elements.get('navReports').listeners.click();
   elements.get('reportScope').value='dataset';
@@ -400,6 +411,61 @@ test('workspace analytics, event comparison, navigation and dataset report use s
   assert.match(blobs[1].parts[0],/c_recency,c_confidence,c_frp/);
   elements.get('navData').listeners.click();
   assert.match(textOf(elements.get('dataContext')),/synthetic_sample.csv/);
+});
+
+test('live FIRMS fetch uses backend API, displays provenance and updates the workspace', async () => {
+  const fetchedAt='2026-10-17T04:00:00Z', source='VIIRS_SNPP_NRT';
+  const {elements,calls,samplePayload,jsonResponse,document}=dashboard(null,'http:',true,url=>url.includes('/api/firms/area')
+    ? jsonResponse({...samplePayload,ingestion:{...samplePayload.ingestion,data_kind:'nasa_firms_live'},live_fetch:{source,fetched_at:fetchedAt}})
+    : null);
+  const field=id=>elements.get(id)||document.getElementById(id);
+  field('firmsWest').value='10';
+  field('firmsSouth').value='20';
+  field('firmsEast').value='30';
+  field('firmsNorth').value='40';
+  field('firmsDays').value='3';
+  field('firmsSource').value=source;
+  field('liveFetchToken').value='synthetic-live-fetch-token';
+  const pending=elements.get('fetchLiveFirms').listeners.click();
+  assert.equal(elements.get('fetchLiveFirms').disabled,true);
+  assert.match(elements.get('liveFirmsStatus').textContent,/Fetching/);
+  await pending;
+  assert.equal(elements.get('fetchLiveFirms').disabled,false);
+  const liveRequest=calls.find(call=>call.url.includes('/api/firms/area'));
+  assert.ok(liveRequest);
+  assert.equal(new URL(liveRequest.url).searchParams.get('west'),'10');
+  assert.equal(new URL(liveRequest.url).searchParams.get('source'),source);
+  assert.equal(liveRequest.options.headers.Authorization,'Bearer synthetic-live-fetch-token');
+  assert.ok(!calls.some(call=>call.url.includes('MAP_KEY')));
+  assert.equal(elements.get('provenance').textContent,'NASA FIRMS live API response');
+  assert.match(elements.get('liveFirmsStatus').textContent,/Last updated 2026-10-17 04:00:00 UTC/);
+  assert.match(elements.get('footerSource').textContent,/NASA FIRMS LIVE · 1 accepted/);
+  elements.get('navData').listeners.click();
+  assert.match(textOf(elements.get('dataContext')),/NASA FIRMS Area API/);
+  assert.match(textOf(elements.get('dataContext')),/2026-10-17T04:00:00Z/);
+});
+
+test('live FIRMS empty and failed responses stay explicit without sample fallback', async () => {
+  const emptyPayload={
+    issues:[],rows:[],events:[],evaluation:null,
+    ingestion:{data_kind:'nasa_firms_live',accepted:0,rejected:0,deduplicated:0,total_records:0,physical_lines:1,columns:[],outcomes:[]},
+    live_fetch:{source:'VIIRS_SNPP_NRT',fetched_at:'2026-10-17T04:00:00Z'}
+  };
+  const empty=dashboard(null,'http:',true,url=>url.includes('/api/firms/area')?{ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>emptyPayload}:null);
+  const setFields=(elements,document)=>{for(const [id,value] of [['firmsWest','10'],['firmsSouth','20'],['firmsEast','30'],['firmsNorth','40'],['liveFetchToken','synthetic-live-fetch-token']])(elements.get(id)||document.getElementById(id)).value=value;};
+  setFields(empty.elements,empty.document);
+  await empty.elements.get('fetchLiveFirms').listeners.click();
+  assert.match(empty.elements.get('liveFirmsStatus').textContent,/no accepted observations/i);
+  assert.match(empty.elements.get('footerSource').textContent,/NASA FIRMS LIVE · 0 accepted/);
+
+  const failed=dashboard(null,'http:',true,url=>url.includes('/api/firms/area')
+    ?{ok:false,status:503,headers:{get:()=> 'application/json'},json:async()=>({detail:'NASA FIRMS credentials are not configured on this backend'})}
+    :null);
+  setFields(failed.elements,failed.document);
+  await failed.elements.get('fetchLiveFirms').listeners.click();
+  assert.match(failed.elements.get('liveFirmsStatus').textContent,/Live fetch failed/);
+  assert.equal(failed.elements.get('mAccepted').textContent,'—');
+  assert.ok(failed.elements.get('toasts').children.length);
 });
 
 test('upload 413 retains dataset and report; request errors do not mislabel a reachable API', async () => {

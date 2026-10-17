@@ -2,7 +2,7 @@
   "use strict";
 
   const API_BASE_URL = window.location?.port === "5500"
-    ? "http://127.0.0.1:8010"
+    ? "http://127.0.0.1:8013"
     : window.location?.origin || "http://127.0.0.1:8010";
   let workspace = null;
   const PAGE_SIZE = 50;
@@ -16,7 +16,7 @@
     timer: null, loading: false, map: null, mapLayer: null, markers: new Map(),
     duel: false, duelMaps: [], duelLayers: [], exploratory: false,
     exploratoryWeights: null, paletteItems: [], paletteIndex: 0, paletteReturn: null,
-    fitPending: false, datasetVersion: 0, loadedAt: null, sourceName: null, sourceType: null, sourceFile: null, apiConnected: null, healthBusy: false,
+    fitPending: false, datasetVersion: 0, loadedAt: null, liveFirmsFetchedAt: null, sourceName: null, sourceType: null, sourceFile: null, apiConnected: null, healthBusy: false,
     markerOpacity: 0.9, basemapName: "satellite", imageryDate: new Date(Date.now() - 86400000).toISOString().slice(0, 10), referenceLabels: false
   };
 
@@ -42,10 +42,12 @@
   async function request(path, options = {}) {
     if (window.location?.protocol === "file:") throw new Error("Open the dashboard over HTTP, such as http://127.0.0.1:8010/, so the API can be reached.");
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 30000;
+    const { timeoutMs: _timeoutMs, ...fetchOptions } = options;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     try {
-      response = await fetch(new URL(path, API_BASE_URL), { ...options, signal: controller.signal });
+      response = await fetch(new URL(path, API_BASE_URL), { ...fetchOptions, signal: controller.signal });
     } catch (error) {
       clearTimeout(timeout);
       state.apiConnected = false;
@@ -86,7 +88,8 @@
       intelligence: payload.intelligence && typeof payload.intelligence === "object" ? payload.intelligence : null,
       evaluation: payload.evaluation && typeof payload.evaluation === "object" ? payload.evaluation : null,
       weights: payload.weights && typeof payload.weights === "object" ? payload.weights : null,
-      provenance: ["synthetic", "user_supplied_unverified"].includes(payload.ingestion.data_kind) ? payload.ingestion.data_kind : "unknown"
+      liveFetch: payload.live_fetch && typeof payload.live_fetch === "object" ? payload.live_fetch : null,
+      provenance: ["synthetic", "user_supplied_unverified", "nasa_firms_live"].includes(payload.ingestion.data_kind) ? payload.ingestion.data_kind : "unknown"
     };
   }
 
@@ -157,7 +160,8 @@
   function replaceDataset(parsed, message, source = {}) {
     state.datasetVersion += 1;
     state.keys = new WeakMap();
-    state.loadedAt = new Date().toISOString();
+    state.loadedAt = parsed.liveFetch?.fetched_at || new Date().toISOString();
+    if (parsed.liveFetch?.fetched_at) state.liveFirmsFetchedAt = parsed.liveFetch.fetched_at;
     state.sourceName = source.name || null; state.sourceType = source.type || null; state.sourceFile = source.file || null;
     state.apiConnected = true;
     workspace?.datasetChanged();
@@ -212,6 +216,8 @@
     if ($("refreshData")) $("refreshData").disabled = loading || !state.sourceType;
     if ($("dataSample")) $("dataSample").disabled = loading;
     if ($("bSample")) $("bSample").disabled = loading;
+    if ($("fetchLiveFirms")) $("fetchLiveFirms").disabled = loading;
+    for (const id of ["firmsWest", "firmsSouth", "firmsEast", "firmsNorth", "firmsDays", "firmsSource", "liveFetchToken"]) if ($(id)) $(id).disabled = loading;
     if ($("file")) $("file").disabled = loading;
     if ($("ingestXray")) $("ingestXray").hidden = !loading;
   }
@@ -244,6 +250,55 @@
       setLoading(false);
       if ($("file")) $("file").value = "";
     }
+  }
+  async function fetchLiveFirms() {
+    if (state.loading) return;
+    const fields = ["firmsWest", "firmsSouth", "firmsEast", "firmsNorth"];
+    const raw = fields.map(id => $(id)?.value?.trim() ?? "");
+    const values = raw.map(Number);
+    if (raw.some(value => value === "") || values.some(value => !Number.isFinite(value))) {
+      toast("Enter numeric west, south, east and north coordinates.", "error");
+      return;
+    }
+    const [west, south, east, north] = values;
+    if (west < -180 || west >= east || east > 180 || south < -90 || south >= north || north > 90) {
+      toast("Area bounds must satisfy -180 ≤ west < east ≤ 180 and -90 ≤ south < north ≤ 90.", "error");
+      return;
+    }
+    const query = new URLSearchParams({
+      west: String(west), south: String(south), east: String(east), north: String(north),
+      days: $("firmsDays").value, source: $("firmsSource").value
+    });
+    const source = $("firmsSource").value;
+    const accessToken = $("liveFetchToken").value.trim();
+    if (!accessToken) {
+      toast("Enter the backend-configured live-fetch access token.", "error");
+      return;
+    }
+    setLoading(true);
+    state.error = false;
+    state.message = "Fetching a recent observation snapshot from NASA FIRMS…";
+    if ($("liveFirmsStatus")) $("liveFirmsStatus").textContent = "Fetching from the NASA FIRMS Area API…";
+    renderStatus();
+    try {
+      const payload = parseResponse(await request(`/api/firms/area?${query}`, {
+        timeoutMs: 60000,
+        headers: {Authorization: `Bearer ${accessToken}`}
+      }));
+      const count = payload.rows.length;
+      replaceDataset(payload, count
+        ? `NASA FIRMS ${source} snapshot loaded; ${count} observations accepted.`
+        : `NASA FIRMS ${source} request completed; no observations passed validation for this area and period.`,
+      {type:"firms", name:`NASA FIRMS Area API · ${source}`});
+      const fetchedAt = fmtTime(payload.liveFetch?.fetched_at || state.loadedAt);
+      if ($("liveFirmsStatus")) $("liveFirmsStatus").textContent = count
+        ? `Last updated ${fetchedAt} · ${count} accepted observations from ${source}.`
+        : `Last updated ${fetchedAt} · no accepted observations for this area and period.`;
+      toast(count ? `NASA FIRMS returned ${count} accepted observations.` : "NASA FIRMS returned no accepted observations for this area and period.", count ? "ok" : "info");
+    } catch (error) {
+      if ($("liveFirmsStatus")) $("liveFirmsStatus").textContent = `Live fetch failed. ${state.liveFirmsFetchedAt ? `Last successful fetch: ${fmtTime(state.liveFirmsFetchedAt)}.` : "No successful live fetch in this session."}`;
+      showRequestError("NASA FIRMS fetch failed", error);
+    } finally { setLoading(false); }
   }
   function showRequestError(prefix, error) {
     state.error = true;
@@ -828,6 +883,7 @@
     }
     setText("provenance", {
       synthetic: "Synthetic demo data (backend-reported)",
+      nasa_firms_live: "NASA FIRMS live API response",
       user_supplied_unverified: "User-supplied data; provenance unverified",
       unknown: "Provenance unavailable"
     }[state.provenance]);
@@ -1249,7 +1305,7 @@
     } finally { state.healthBusy = false; renderStatus(); }
   }
 
-  workspace = window.PyroWorkspace?.create({state, el, $, fmt, fmtTime, openEvent, selectObservation, setMapMode, checkHealth, upload, loadSample, announce, toast, filteredRows, render});
+  workspace = window.PyroWorkspace?.create({state, el, $, fmt, fmtTime, openEvent, selectObservation, setMapMode, checkHealth, upload, loadSample, fetchLiveFirms, announce, toast, filteredRows, render});
   bind();
   initMaps();
   resetTimeline([]);

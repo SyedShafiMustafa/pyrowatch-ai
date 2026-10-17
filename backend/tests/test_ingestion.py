@@ -192,3 +192,82 @@ def test_firms_http_mock_and_secret_redaction(monkeypatch):
     with pytest.raises(ValueError):
         fetch_area_csv(10, 20, 30, 40, days=6)
     get.assert_not_called()
+
+
+def test_live_firms_area_route_uses_new_key_and_existing_pipeline(monkeypatch):
+    from app.main import app
+
+    key = 'synthetic-route-key'
+    monkeypatch.delenv('MAP_KEY', raising=False)
+    monkeypatch.delenv('FIRMS_MAP_KEY', raising=False)
+    monkeypatch.setenv('NASA_FIRMS_MAP_KEY', key)
+    token = 'synthetic-live-fetch-token'
+    monkeypatch.setenv('PYROWATCH_LIVE_FETCH_TOKEN', token)
+    get = Mock(return_value=Mock(status_code=200, text=HEAD + ROW))
+    monkeypatch.setattr('app.firms_client.requests.get', get)
+
+    with TestClient(app) as client:
+        response = client.get('/api/firms/area', params={
+            'west': 10, 'south': 20, 'east': 30, 'north': 40,
+            'days': 3, 'source': 'VIIRS_SNPP_NRT'},
+            headers={'Authorization': f'Bearer {token}'})
+        invalid_area = client.get('/api/firms/area', params={
+            'west': 30, 'south': 20, 'east': 10, 'north': 40},
+            headers={'Authorization': f'Bearer {token}'})
+        openapi = client.get('/openapi.json').json()
+
+    assert response.status_code == 200
+    assert invalid_area.status_code == 422
+    assert '/api/firms/area' in openapi['paths']
+    assert 'authorization' in str(openapi['paths']['/api/firms/area']).lower()
+    result = response.json()
+    assert result['ingestion']['data_kind'] == 'nasa_firms_live'
+    assert result['ingestion']['accepted'] == 1
+    assert result['rows'][0]['time'] == '2026-10-10 02:30:00+00:00'
+    assert result['rows'][0]['score'] is not None
+    assert result['events'][0]['pixels'] == 1
+    assert result['live_fetch']['source'] == 'VIIRS_SNPP_NRT'
+    assert result['live_fetch']['fetched_at'].endswith('Z')
+    assert get.call_args.args[0].endswith(
+        '/api/area/csv/synthetic-route-key/VIIRS_SNPP_NRT/10.0,20.0,30.0,40.0/3')
+    assert get.call_count == 1
+
+
+def test_live_firms_route_reports_missing_backend_key(monkeypatch):
+    from app.main import app
+
+    for name in ('NASA_FIRMS_MAP_KEY', 'MAP_KEY', 'FIRMS_MAP_KEY'):
+        monkeypatch.delenv(name, raising=False)
+    with TestClient(app) as client:
+        response = client.get('/api/firms/area', params={
+            'west': 10, 'south': 20, 'east': 30, 'north': 40})
+    assert response.status_code == 503
+    assert 'not enabled' in response.json()['detail']
+
+
+@pytest.mark.parametrize('authorization', [None, 'Bearer wrong-token', 'Basic synthetic-token'])
+def test_live_firms_route_rejects_missing_or_invalid_access_token(monkeypatch, authorization):
+    from app.main import app
+
+    monkeypatch.setenv('PYROWATCH_LIVE_FETCH_TOKEN', 'synthetic-expected-token')
+    get = Mock()
+    monkeypatch.setattr('app.firms_client.requests.get', get)
+    headers = {} if authorization is None else {'Authorization': authorization}
+    with TestClient(app) as client:
+        response = client.get('/api/firms/area', params={
+            'west': 10, 'south': 20, 'east': 30, 'north': 40}, headers=headers)
+    assert response.status_code == 401
+    assert response.headers['www-authenticate'] == 'Bearer'
+    get.assert_not_called()
+
+
+def test_live_firms_route_requires_access_token_configuration(monkeypatch):
+    from app.main import app
+
+    monkeypatch.delenv('PYROWATCH_LIVE_FETCH_TOKEN', raising=False)
+    with TestClient(app) as client:
+        response = client.get('/api/firms/area', params={
+            'west': 10, 'south': 20, 'east': 30, 'north': 40},
+            headers={'Authorization': 'Bearer any-token'})
+    assert response.status_code == 503
+    assert 'not enabled' in response.json()['detail']

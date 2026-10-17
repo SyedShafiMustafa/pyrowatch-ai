@@ -50,10 +50,13 @@ existing score; `bright_t31` alone is intentionally unsupported because it is a
 different channel. Confidence mapping l/low=.2, n/nominal=.6, h/high=1 and numeric
 0–100 divided by 100 is an analyst convention, not a calibrated probability.
 
-FIRMS client reads MAP_KEY from the environment (legacy FIRMS_MAP_KEY remains supported),
+FIRMS client reads NASA_FIRMS_MAP_KEY from the environment (MAP_KEY and
+FIRMS_MAP_KEY remain supported),
 validates bounds/source/day range, disables redirects, and replaces transport/status
 errors with messages excluding URLs, keys and response bodies. No .env auto-loading.
-No live FIRMS observation request was made. Tests mock HTTP.
+The live HTTP route additionally requires a constant-time-checked bearer token from
+PYROWATCH_LIVE_FETCH_TOKEN; the frontend never contains the NASA credential. No
+live FIRMS observation request was made. Tests mock HTTP.
 
 ## References checked live
 

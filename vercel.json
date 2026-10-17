@@ -2,7 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "backend/app/main.py": {
-      "includeFiles": "data/sample/synthetic_sample.csv"
+      "includeFiles": "data/sample/synthetic_sample.csv",
+      "maxDuration": 60
     }
   }
 }
