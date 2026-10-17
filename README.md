@@ -34,11 +34,12 @@ that local origin when the backend is on port 8010.
 ## Deploy to Vercel
 
 Import this repository into Vercel with the repository root as the project root.
-Vercel reads `requirements.txt` and the `tool.vercel.entrypoint` setting in
+Vercel reads the `tool.vercel.entrypoint` and runtime dependencies in
 `pyproject.toml` to deploy `backend.app.main:app` as the Python FastAPI
 application. The root `StaticFiles` mount serves the frontend on the same
 origin; Vercel promotes its files to the CDN. `vercel.json` explicitly bundles
 the synthetic sample CSV, which the `/api/sample` route reads at runtime.
+`requirements.txt` remains the local development and test dependency list.
 
 No frontend API URL or secrets are required for the combined deployment. The
 dashboard uses the deployed page's origin for `/api/health`, `/api/sample`, and
