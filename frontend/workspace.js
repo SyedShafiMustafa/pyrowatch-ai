@@ -204,11 +204,24 @@ window.PyroWorkspace = {
     }
     function locateEvent() {
       const b=D.bounds(selectedMembers());if(!b)return;
-      if(globeActive && globeReady)globe.flyTo({center:[(b.west+b.east)/2,(b.south+b.north)/2],zoom:8,essential:false,duration:window.matchMedia?.('(prefers-reduced-motion: reduce)').matches?0:900});
+      if(globeActive && globeReady)focusGlobe(selectedMembers(),8);
       else state.map?.fitBounds([[b.south,b.west],[b.north,b.east]],{maxZoom:12});
     }
+    function focusGlobe(rows,maxZoom=5) {
+      if(!globeReady)return;
+      const b=D.bounds(rows);
+      if(!b){globe.flyTo({center:[0,10],zoom:.4,duration:0});return;}
+      const longitude=((((b.west+b.east)/2)+180)%360+360)%360-180;
+      const latitude=(b.south+b.north)/2;
+      const span=Math.max(b.east-b.west,b.north-b.south,.05);
+      const zoom=Math.max(.4,Math.min(maxZoom,Math.log2(360/span)-2.8));
+      globe.flyTo({
+        center:[longitude,latitude],zoom,
+        duration:window.matchMedia?.('(prefers-reduced-motion: reduce)').matches?0:700
+      });
+    }
     function overview() {
-      if(globeActive){globe?.flyTo({center:[0,10],zoom:0.4,pitch:0,bearing:0,duration:window.matchMedia?.('(prefers-reduced-motion: reduce)').matches?0:800});return;}
+      if(globeActive){focusGlobe(filteredRows());return;}
       const b=D.bounds(filteredRows());if(b)state.map?.fitBounds([[b.south,b.west],[b.north,b.east]],{maxZoom:10});else state.map?.setView([10,20],2);
     }
     function leaveGlobe() {
@@ -229,22 +242,22 @@ window.PyroWorkspace = {
       text('globeStatus','Loading globe renderer…');$('modeGlobe').classList.toggle('is-active',true);$('modeGlobe').setAttribute('aria-pressed','true');$('modeSample').classList.toggle('is-active',false);$('modeSample').setAttribute('aria-pressed','false');
       try {
         await loadGlobeLibrary();if(!globeActive)return;
-        if(globe){globe.resize();renderGlobe();text('globeStatus','Globe · Reference cartography, no elevation or satellite imagery. Drag to rotate; right-drag to tilt.');return;}
+        if(globe){globe.resize();renderGlobe();focusGlobe(filteredRows());text('globeStatus','Globe · OpenStreetMap reference tiles; no elevation or satellite imagery. Drag to rotate; right-drag to tilt.');return;}
         globe=new window.maplibregl.Map({container:'globeMap',center:[0,10],zoom:.4,maxZoom:17,attributionControl:true,
-          style:{version:8,projection:{type:'globe'},sources:{osm:{type:'raster',tiles:['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],tileSize:256,maxzoom:19,attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}},layers:[{id:'background',type:'background',paint:{'background-color':'#0b1828'}},{id:'basemap',type:'raster',source:'osm',paint:{'raster-saturation':-.85,'raster-brightness-max':.48}}]}});
+          style:{version:8,projection:{type:'globe'},sources:{osm:{type:'raster',tiles:['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],tileSize:256,maxzoom:19,attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}},layers:[{id:'background',type:'background',paint:{'background-color':'#171b18'}},{id:'basemap',type:'raster',source:'osm',paint:{'raster-saturation':-.7,'raster-brightness-min':.12,'raster-brightness-max':.82,'raster-contrast':.08,'raster-fade-duration':0}}]}});
         globe.addControl(new window.maplibregl.NavigationControl({visualizePitch:true}),'top-right');
-        globe.on('error',()=>text('globeStatus','A globe resource is unavailable. Reference map may be incomplete; use 2D or the observation table.'));
+        globe.on('error',event=>text('globeStatus',`Globe map error: ${event.error?.message || 'a map resource could not be loaded'}. Use 2D or the observation table; map tiles require an internet connection.`));
         globe.on('load',()=>{
           globeReady=true;globe.setProjection({type:'globe'});
           globe.addSource('detections',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
-          globe.addLayer({id:'observations',type:'circle',source:'detections',paint:{'circle-radius':4,'circle-color':['case',['get','hasScore'],['interpolate',['linear'],['get','score'],0,'#c9c0a0',50,'#e4ac54',100,'#dc773f'],'#8e9aaa'],'circle-opacity':.9,'circle-stroke-width':.5,'circle-stroke-color':'#151f2b'}});
-          globe.addLayer({id:'selected-observation',type:'circle',source:'detections',filter:['==',['get','selected'],true],paint:{'circle-radius':9,'circle-color':'#65bec9','circle-opacity':0,'circle-stroke-width':2,'circle-stroke-color':'#a9edf4'}});
+          globe.addLayer({id:'observations',type:'circle',source:'detections',paint:{'circle-radius':4,'circle-color':['case',['get','hasScore'],['interpolate',['linear'],['get','score'],0,'#969b86',50,'#c69a58',100,'#bd6139'],'#8d9387'],'circle-opacity':.94,'circle-stroke-width':.7,'circle-stroke-color':'#272b25'}});
+          globe.addLayer({id:'selected-observation',type:'circle',source:'detections',filter:['==',['get','selected'],true],paint:{'circle-radius':9,'circle-color':'#c97843','circle-opacity':.25,'circle-stroke-width':2,'circle-stroke-color':'#e1a16c'}});
           globe.addSource('bounds',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
-          globe.addLayer({id:'event-bounds',type:'line',source:'bounds',paint:{'line-color':'#78d2dd','line-width':2,'line-dasharray':[3,2]}});
+          globe.addLayer({id:'event-bounds',type:'line',source:'bounds',paint:{'line-color':'#c97843','line-width':2,'line-dasharray':[3,2]}});
           globe.on('click','observations',event=>{const key=event.features?.[0]?.properties?.key;if(key)selectObservation(key,false);});
           globe.on('mouseenter','observations',()=>{globe.getCanvas().style.cursor='pointer';});globe.on('mouseleave','observations',()=>{globe.getCanvas().style.cursor='';});
           globe.on('mousemove',event=>text('mapCoordinates',`${fmt(event.lngLat.lat,5)}°, ${fmt(event.lngLat.lng,5)}° · WGS84 globe`));
-          text('globeStatus','Globe · Reference cartography, no elevation or satellite imagery. Drag to rotate; right-drag to tilt.');renderGlobe();
+          text('globeStatus','Globe · OpenStreetMap reference tiles; no elevation or satellite imagery. Drag to rotate; right-drag to tilt.');renderGlobe();focusGlobe(filteredRows());
         });
       } catch(error) { text('globeStatus',`${error.message} Use the 2D map or observation table. WebGL and a reachable MapLibre CDN are required.`); }
     }
@@ -266,6 +279,7 @@ window.PyroWorkspace = {
     function update() {
       if(datasetRef!==state.rows) {
         datasetRef=state.rows;populateEventSelect('compareA',state.events[0]?.event_id);populateEventSelect('compareB',state.events[1]?.event_id);
+        const rows=filteredRows();if(globeActive&&globeReady&&rows.length)focusGlobe(rows);
       }
       const range=D.timeRange(state.rows);
       text('footerSource',state.ingestion?`${state.provenance==='synthetic'?'SYNTHETIC SAMPLE':state.provenance==='user_supplied_unverified'?'UPLOADED / UNVERIFIED':'SOURCE UNKNOWN'} · ${state.rows.length} accepted`:'NO DATASET');
