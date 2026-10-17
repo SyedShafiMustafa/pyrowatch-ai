@@ -18,6 +18,7 @@ class Element {
     this.disabled = false;
     this.rows = this.children;
     this.tagName = '';
+    this.nodeType = 1;
   }
   addEventListener(name, fn) { this.listeners[name] = fn; }
   append(...nodes) { this.children.push(...nodes); }
@@ -25,6 +26,7 @@ class Element {
   click() { this.clicked = true; }
   replaceChildren(...nodes) { this.children = nodes; this.rows = nodes; }
   setAttribute(name, value) { this[name] = value; }
+  removeAttribute(name) { delete this[name]; }
   hasAttribute(name) { return Object.hasOwn(this, name); }
   scrollIntoView() {}
   focus() { this.focused = true; if(this.ownerDocument)this.ownerDocument.activeElement=this; }
@@ -41,7 +43,7 @@ class Element {
   get options() { return this.children; }
 }
 
-function dashboard(sampleOverride = null, protocol = 'http:') {
+function dashboard(sampleOverride = null, protocol = 'http:', workspace = false, responseOverride = null) {
   const elements = new Map();
   const calls = [];
   const blobs = [];
@@ -135,6 +137,7 @@ function dashboard(sampleOverride = null, protocol = 'http:') {
     fetch: async (url, options = {}) => {
       const target = String(url);
       calls.push({url: target, options});
+      if (responseOverride) { const override = responseOverride(target, options); if (override) return override; }
       if (target.endsWith('/api/sample')) return jsonResponse(samplePayload);
       if (target.endsWith('/api/upload')) {
         return options.body.file.name === 'invalid.csv'
@@ -146,6 +149,10 @@ function dashboard(sampleOverride = null, protocol = 'http:') {
   });
   elements.set('filterRail', new Element());
   elements.get('filterRail').hidden = true;
+  if (workspace) {
+    context.window.PyroData = require('../workspace-data.js');
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'workspace.js'), 'utf8'), context);
+  }
   vm.runInContext(source, context);
   return {elements, calls, blobs, createdElements, documentListeners, document: testDocument};
 }
@@ -341,4 +348,68 @@ test('official contribution display distinguishes zero from absent fields and re
   historyButton(history(elements)[0]).listeners.click();
   assert.match(textOf(elements.get('scoreContent')),/frp: Contribution unavailable/);
   assert.match(textOf(elements.get('scoreContent')),/Official review priority: 70.0 \/ 100/);
+});
+
+test('workspace event zero preserves filters, exports full history and invalidates stale reports on replacement', async () => {
+  const {elements,blobs,createdElements}=dashboard(specialPayload,'http:',true);
+  await elements.get('bSample').listeners.click();
+  elements.get('frpMin').listeners.input({target:{value:'1000'}});
+  elements.get('eventContent').children.find(node=>textOf(node).includes('Event 0')).listeners.click();
+  assert.equal(elements.get('mVisible').textContent,'0');
+  assert.equal(elements.get('eventFilter').value,'');
+  assert.equal(history(elements).length,5);
+  assert.equal(elements.get('inspectorTitle').textContent,'Candidate event 0');
+  elements.get('reportSelected').listeners.click();
+  assert.equal(elements.get('viewReports').hidden,false);
+  assert.equal(elements.get('downloadReport').disabled,false);
+  elements.get('downloadReport').listeners.click();
+  const report=JSON.parse(blobs[0].parts[0]);
+  assert.equal(report.scope,'candidate_event');
+  assert.equal(report.event_id,'0');
+  assert.equal(report.observations.length,5,'report includes all event members independent of filters');
+  assert.equal(report.observations.filter(row=>row.time==='2026-10-10T00:00:00Z').length,2);
+  assert.equal(report.observations[0].confidence_raw,'<img src=x onerror=alert(1)>');
+  assert.ok(!createdElements.some(node=>node.tagName==='img'));
+  assert.match(textOf(elements.get('reportPreview')),/not fire probability/);
+  await elements.get('bSample').listeners.click();
+  assert.equal(elements.get('downloadReport').disabled,true);
+  assert.equal(elements.get('generateReport').disabled,true);
+  assert.equal(history(elements).length,0);
+});
+
+test('workspace analytics, event comparison, navigation and dataset report use supplied data', async () => {
+  const {elements,blobs}=dashboard(null,'http:',true);
+  await elements.get('bSample').listeners.click();
+  elements.get('navAnalytics').listeners.click();
+  assert.equal(elements.get('viewAnalytics').hidden,false);
+  assert.equal(elements.get('deck').hidden,true);
+  assert.match(textOf(elements.get('acquisitionChart')),/2026-10-10/);
+  assert.match(textOf(elements.get('eventComparison')),/unavailable/i);
+  elements.get('navReports').listeners.click();
+  elements.get('reportScope').value='dataset';
+  elements.get('reportScope').listeners.change();
+  elements.get('generateReport').listeners.click();
+  elements.get('downloadReport').listeners.click();
+  const report=JSON.parse(blobs[0].parts[0]);
+  assert.equal(report.observations[0].score,62);
+  assert.equal(report.observations[0].c_repeats,0);
+  assert.equal(report.intelligence.model.status,'unavailable');
+  assert.equal(report.dataset.source,'synthetic');
+  assert.ok(report.dataset.response_loaded_at);
+  elements.get('downloadReportCsv').listeners.click();
+  assert.match(blobs[1].parts[0],/c_recency,c_confidence,c_frp/);
+  elements.get('navData').listeners.click();
+  assert.match(textOf(elements.get('dataContext')),/synthetic_sample.csv/);
+});
+
+test('upload 413 retains dataset and report; request errors do not mislabel a reachable API', async () => {
+  const {elements}=dashboard(null,'http:',true,(url,options)=>url.endsWith('/api/upload')?{ok:false,status:413,headers:{get:()=> 'application/json'},json:async()=>({detail:'Upload request exceeds the 10485760-byte limit'})}:null);
+  await elements.get('bSample').listeners.click();
+  elements.get('eventContent').children[0].listeners.click();
+  elements.get('reportSelected').listeners.click();
+  await elements.get('file').listeners.change({target:{files:[{name:'oversize.csv'}]}});
+  assert.match(elements.get('datasetMessage').textContent,/HTTP 413/);
+  assert.equal(elements.get('mAccepted').textContent,'1');
+  assert.equal(elements.get('connectionStatus').textContent,'API connected');
+  assert.equal(elements.get('downloadReport').disabled,false);
 });

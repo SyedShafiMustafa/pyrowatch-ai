@@ -3,16 +3,17 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>PyroWatch Command Deck | Thermal anomaly triage</title>
+  <title>PyroWatch | Geospatial Intelligence</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
   <link rel="stylesheet" href="style.css">
+
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true">PW</span>
-      <div class="brand-word"><h1>PyroWatch<i>Command Deck</i></h1>
-        <p class="brand-sub">Thermal anomaly triage and observation intelligence</p></div>
+      <span class="brand-mark" aria-hidden="true">P<span>W</span></span>
+      <div class="brand-word"><h1>PyroWatch<i>Earth observation intelligence</i></h1>
+        <p class="brand-sub">CANDIDATE EVENTS / ANALYST WORKSPACE</p></div>
     </div>
     <div class="topbar-status" aria-label="Dataset status">
       <p class="chip" id="provenance" title="Provenance reported by the backend">No dataset loaded.</p>
@@ -23,12 +24,23 @@
       <button id="toggleFilters" class="ghost-button filter-toggle" type="button" aria-expanded="false" aria-controls="filterRail" title="Show filters"><span aria-hidden="true">☷</span> Filters <span id="activeFilterCount" class="filter-count">0</span></button>
       <button id="openPalette" class="ghost-button" type="button" aria-haspopup="dialog" aria-controls="palette" title="Command palette (Ctrl+K)">Commands <kbd>Ctrl K</kbd></button>
       <button id="bSample" class="action-button" type="button">Load synthetic sample</button>
-      <label class="action-button file-button" for="file">Upload CSV</label>
+      <button id="refreshData" class="ghost-button" type="button" disabled>Refresh dataset</button>
+      <button id="openData" class="action-button primary" type="button">Import data <span aria-hidden="true">↗</span></button>
       <input id="file" type="file" accept=".csv,text/csv" aria-describedby="fileHelp">
       <span id="fileHelp" class="help">UTF-8 CSV with the required observation columns.</span>
     </div>
   </header>
 
+  <nav class="workspace-nav" aria-label="Primary navigation">
+    <div class="nav-links">
+      <button id="navDashboard" aria-current="page" type="button"><span>01</span> Dashboard</button>
+      <button id="navEvents" type="button"><span>02</span> Events</button>
+      <button id="navAnalytics" type="button"><span>03</span> Analytics</button>
+      <button id="navReports" type="button"><span>04</span> Reports</button>
+      <button id="navData" type="button"><span>05</span> Data operations</button>
+    </div>
+    <div class="nav-context"><span class="status-dot" aria-hidden="true"></span> Request-based analysis <button id="healthRefresh" class="text-button" type="button">Check API</button></div>
+  </nav>
   <section class="statusband" aria-label="Dataset summary">
     <p class="scope-warning"><strong>Review support only.</strong> This deck prioritizes satellite thermal anomalies for analyst review. Detections are unconfirmed observations; nothing here confirms a fire or predicts fire behavior.</p>
     <dl class="metrics">
@@ -41,7 +53,7 @@
     </dl>
   </section>
 
-  <main class="deck" id="deck">
+  <main class="deck" id="deck" aria-label="Dashboard">
 
     <aside class="deck-col rail" id="filterRail" aria-label="Search, filters and sorting" hidden>
       <div class="rail-content">
@@ -92,18 +104,33 @@
       </div>
     </aside>
 
+    <aside class="event-explorer panel" aria-labelledby="explorerHeading">
+      <div class="panel-head"><div><p class="eyebrow">CANDIDATE GROUPS</p><h2 id="explorerHeading">Event explorer</h2></div><span class="count-hint" id="eventCount"></span></div>
+      <div class="explorer-controls"><label class="sr-only" for="eventSearch">Search candidate events</label><input id="eventSearch" type="search" placeholder="Find event, satellite, coordinates…"><label class="sr-only" for="eventSort">Sort candidate events</label><select id="eventSort"><option value="priority">Highest official priority</option><option value="recent">Latest acquisition</option><option value="count">Most observations</option></select></div>
+      <p class="explorer-note" id="explorerCount">Load observations to find candidate events.</p>
+      <div id="eventContent" class="explorer-list"></div>
+      <p class="explorer-foot">Response-local groups · Not confirmed fires</p>
+    </aside>
+
     <section class="deck-col center" aria-label="Map, timeline and ranking">
 
       <section class="panel map-card" aria-labelledby="mapHeading">
         <div class="panel-head">
-          <div><h2 id="mapHeading">Observation map</h2><span class="map-legend"><i class="legend-ramp" aria-hidden="true"></i><span>Marker color = review-priority score (0 to 100), not a fire probability</span></span></div>
+          <div><p class="eyebrow">GEOSPATIAL WORKSPACE</p><h2 id="mapHeading">Observation map</h2><span class="map-legend"><i class="legend-ramp" aria-hidden="true"></i><span>Marker color = review-priority score (0 to 100), not a fire probability</span></span></div>
           <div class="seg" role="group" aria-label="Map mode">
-            <button id="modeSample" class="seg-btn is-active" type="button" aria-pressed="true">Priority map</button>
-            <button id="modeDuel" class="seg-btn" type="button" aria-pressed="false" aria-controls="duelWrap">Duel compare</button>
+            <button id="modeSample" class="seg-btn is-active" type="button" aria-pressed="true">2D map</button>
+            <button id="modeGlobe" class="seg-btn" type="button" aria-pressed="false">Globe</button>
+            <button id="modeDuel" class="seg-btn" type="button" aria-pressed="false" aria-controls="duelWrap">Compare rankings</button>
           </div>
         </div>
+        <div class="map-toolbar">
+          <div class="layer-options"><label><input id="layerDetections" type="checkbox" checked> Detections</label><label><input id="layerBounds" type="checkbox" checked> Event bounds</label><label><input id="layerBasemap" type="checkbox" checked> Basemap</label></div>
+          <div><button id="zoomEvent" class="text-button" type="button" disabled>Locate event</button><button id="mapOverview" class="text-button" type="button">Overview</button></div>
+        </div>
         <div class="map-stage">
-          <div id="map" role="img" aria-label="Map of filtered satellite observations"></div>
+          <div id="map" role="region" aria-label="Interactive 2D map of filtered satellite observations"></div>
+          <div id="globeMap" role="region" aria-label="Interactive globe of satellite observations" hidden></div>
+          <div id="globeStatus" class="globe-status" role="status" hidden></div>
           <div id="mapEmptyState" class="map-empty-state" role="status"><span class="map-empty-mark" aria-hidden="true">⌖</span><strong>Geospatial workspace</strong><span id="mapEmptyMessage">Load the synthetic sample or upload observations to plot coordinate-valid records.</span><small>Thermal anomalies are unconfirmed satellite observations.</small></div>
           <div id="duelWrap" class="duel-wrap" hidden role="region" aria-label="Side-by-side ranking comparison">
             <div class="duel-col"><p class="duel-cap duel-cap-left">Triage ranking (official score)</p><div id="mapLeft" class="duel-mapslot"></div></div>
@@ -113,13 +140,14 @@
           </div>
         </div>
         <div id="mapFallback" class="map-fallback" role="status">Map is initializing. The ranking list remains available.</div>
-        <p class="panel-note" id="mapNote">Dark CARTO basemap (internet; OpenStreetMap fallback). Duel view overlays numbered rank badges on the top 25 of each ordering.</p>
+        <p class="panel-note" id="mapNote">OpenStreetMap reference basemap. Event bounds enclose observed coordinates; they are not fire perimeters.</p>
+        <p id="mapCoordinates" class="coordinate-readout mono">Move over the map to inspect coordinates.</p>
         <div id="compareExplain" class="compare-explain" hidden></div>
       </section>
 
       <section class="panel timeline-card" aria-labelledby="tlHeading">
         <div class="panel-head">
-          <div><h2 id="tlHeading">Timeline</h2><p class="timeline-status"><span id="tlLabel" class="mono">Cursor at end of dataset</span><span id="tlElapsed" class="muted"></span></p></div>
+          <div><h2 id="tlHeading">Dataset playback</h2><p class="timeline-status"><span id="tlLabel" class="mono">Cursor at end of dataset</span><span id="tlElapsed" class="muted"></span></p></div>
           <div class="timeline-controls">
             <button id="tlPlay" class="icon-button" type="button" aria-pressed="false" title="Play through observation times">Play</button>
             <button id="tlReset" class="icon-button" type="button" title="Move the cursor to the latest observation">Jump to end</button>
@@ -164,33 +192,22 @@
       </section>
     </section>
 
-    <aside class="deck-col side" aria-label="Dossier, evaluation and ingestion">
-      <section class="panel" aria-labelledby="detailHeading">
+    <aside class="deck-col side" aria-label="Event investigation">
+      <div class="inspector-header"><div><p class="eyebrow">INVESTIGATION</p><h2 id="inspectorTitle">Select an event</h2></div><button id="reportSelected" class="text-button" type="button" disabled>Report ↗</button></div>
+      <div class="inspector-tabs" role="group" aria-label="Investigation section"><button id="inspectEvent" aria-pressed="true" type="button">Event & history</button><button id="inspectScore" aria-pressed="false" type="button">Priority</button><button id="inspectObservation" aria-pressed="false" type="button">Observation</button></div>
+      <section class="panel inspector-section" id="observationPanel" aria-labelledby="detailHeading" hidden>
         <div class="panel-head"><h2 id="detailHeading">Selected observation</h2></div>
         <div id="detailContent"><p class="panel-note">Select a table row or a marker.</p></div>
       </section>
-      <section class="panel" aria-labelledby="scoreHeading">
+      <section class="panel inspector-section" id="priorityPanel" aria-labelledby="scoreHeading" hidden>
         <div class="panel-head"><h2 id="scoreHeading">Score composition</h2></div>
         <div id="scoreContent"><p class="panel-note">Server-reported contribution breakdown appears here when a record is selected.</p></div>
         <p class="help">Values are review-priority contributions, not probabilities.</p>
       </section>
-      <section class="panel" aria-labelledby="dossierHeading">
+      <section class="panel inspector-section" id="dossierPanel" aria-labelledby="dossierHeading">
         <div class="panel-head"><h2 id="dossierHeading">Event dossier</h2></div>
         <div id="dossierContent"><p class="panel-note">Open an event dossier from the Events list, a marker popup or the command palette.</p></div>
       </section>
-      <details class="side-disclosure" id="eventsPanel">
-        <summary><span>Events</span><span class="count-hint" id="eventCount"></span></summary>
-        <div id="eventContent"><p class="panel-note">Event information unavailable until a dataset is loaded.</p></div>
-      </details>
-      <details class="side-disclosure">
-        <summary>Evaluation</summary>
-        <div id="evaluationContent"><p class="panel-note">Evaluation results unavailable from the current API.</p></div>
-      </details>
-      <details class="side-disclosure">
-        <summary><span id="ingestionHeading">Ingestion report</span><span id="ingestXray" class="xray-badge" hidden>Scanning</span></summary>
-        <div id="ingestionSummary" class="ingestion-grid" aria-label="Ingestion summary"></div>
-        <p class="help" id="xrayNote">Counts come from the backend ingestion report. The scanning indicator only reflects the upload in progress; it reports nothing about each record until the server answers.</p>
-      </details>
       <details class="side-disclosure limitations">
         <summary>Review notes and limits</summary>
         <p>Local analyst annotations are unavailable because the API does not provide a stable observation identifier. No analyst label is saved or sent to the server.</p>
@@ -198,6 +215,33 @@
       </details>
     </aside>
   </main>
+
+
+  <section id="viewEvents" class="workspace-view" aria-labelledby="eventsViewHeading" hidden>
+    <header class="view-heading"><div><p class="eyebrow">CATALOG / RESPONSE-LOCAL EVENTS</p><h2 id="eventsViewHeading">Candidate event catalog</h2><p>Investigate groups formed by the backend. Event IDs apply only to the current response.</p></div><button id="eventsFilters" class="action-button" type="button">Open observation filters</button></header>
+    <div id="eventCatalog" class="catalog-table panel"></div>
+  </section>
+  <section id="viewAnalytics" class="workspace-view" aria-labelledby="analyticsHeading" hidden>
+    <header class="view-heading"><div><p class="eyebrow">ANALYSIS / OBSERVED EVIDENCE</p><h2 id="analyticsHeading">Patterns in the observations</h2><p id="analyticsScope">Uses accepted observations matching the dashboard filters and playback cursor.</p></div><button id="analyticsFilters" class="action-button" type="button">Adjust filters</button></header>
+    <div class="analytics-grid">
+      <section class="panel chart-panel"><div class="panel-head"><h3>Acquisition history</h3><span class="muted">UTC / observations per day</span></div><div id="acquisitionChart"></div><p class="panel-note">Counts reflect available detections, not observation opportunities or fire growth. FRP is the mean of available measurements per UTC day.</p></section>
+      <section class="panel chart-panel"><div class="panel-head"><h3>Official priority distribution</h3><span class="muted">0–100 / uncalibrated</span></div><div id="priorityChart"></div></section>
+      <section class="panel comparison-panel"><div class="panel-head"><h3>Compare candidate events</h3><span class="muted">Full histories, independent of table filters</span></div><div class="comparison-selectors"><label>Event A<select id="compareA"></select></label><label>Event B<select id="compareB"></select></label></div><div id="eventComparison"></div></section>
+      <section class="panel"><div class="panel-head"><h3>Ranking evaluation</h3><span class="muted">Only where labelled records exist</span></div><div id="evaluationContent"></div></section>
+    </div>
+  </section>
+  <section id="viewReports" class="workspace-view" aria-labelledby="reportsHeading" hidden>
+    <header class="view-heading"><div><p class="eyebrow">EXPORT / REVIEW SNAPSHOT</p><h2 id="reportsHeading">Evidence report</h2><p>Create a dated snapshot of the loaded response. Review the contents before downloading.</p></div></header>
+    <div class="report-layout"><section class="panel report-controls"><h3>Report scope</h3><label class="field-label" for="reportScope">Include</label><select id="reportScope"><option value="event">Selected candidate event</option><option value="dataset">Entire accepted dataset</option></select><p id="reportScopeNote" class="panel-note">Select an event or choose the full dataset.</p><button id="generateReport" class="action-button primary" type="button" disabled>Generate preview</button><div class="report-actions"><button id="downloadReport" class="action-button" type="button" disabled>Download JSON</button><button id="downloadReportCsv" class="action-button" type="button" disabled>Download observations CSV</button><button id="printReport" class="ghost-button" type="button" disabled>Print report</button></div><p class="panel-note">JSON includes API analysis, contributions and complete accepted rows. CSV contains observations. All exports retain provenance and limitations in the preview / JSON.</p></section><article id="reportPreview" class="panel report-preview" aria-live="polite"><p class="empty-state">Your report preview will appear here.</p></article></div>
+  </section>
+  <section id="viewData" class="workspace-view" aria-labelledby="dataHeading" hidden>
+    <header class="view-heading"><div><p class="eyebrow">INGESTION / SOURCE & VALIDATION</p><h2 id="dataHeading">Data operations</h2><p>Import observations, inspect validation, and keep the source of every result visible.</p></div></header>
+    <div class="data-grid"><section class="panel import-panel"><p class="eyebrow">01 / IMPORT</p><h3>Bring observations into focus</h3><p>Upload a NASA FIRMS-compatible UTF-8 CSV. Required columns and units are validated by the backend.</p><label class="action-button primary file-button" for="file" tabindex="0" id="uploadLabel">Choose CSV file</label><button id="dataSample" class="ghost-button" type="button">Try the synthetic sample</button><p class="panel-note">Default request limit: 10 MiB including multipart overhead. The server may configure a different limit. Uploaded observations remain provenance-unverified.</p><div class="source-guide"><h4>NASA FIRMS</h4><p>Download an official CSV and import it here. This backend has a credential-protected CLI client, but does not expose a live-fetch HTTP endpoint.</p><a href="https://firms.modaps.eosdis.nasa.gov/active_fire/" target="_blank" rel="noopener noreferrer">Open official FIRMS downloads ↗</a><p class="panel-note">Do not enter API credentials in this browser. No continuous satellite feed is connected.</p></div></section>
+      <section class="panel"><div class="panel-head"><h3 id="ingestionHeading">Validation results</h3><span id="ingestXray" class="xray-badge" hidden>Processing request</span></div><div id="ingestionSummary" class="ingestion-grid"></div><p class="help" id="xrayNote">Accepted, rejected and deduplicated counts are returned by the backend. Validation messages are not rejected-row counts.</p></section>
+      <section class="panel"><div class="panel-head"><h3>Source & processing context</h3></div><div id="dataContext"></div></section>
+      <section class="panel"><div class="panel-head"><h3>Method & boundaries</h3></div><div id="methodology"></div></section></div>
+  </section>
+  <footer class="workspace-footer"><span id="footerSource">No dataset loaded</span><span id="footerRange">Acquisition range unavailable</span><span id="footerModel">Model status unavailable</span><span id="lastResponse">No API data response yet</span></footer>
 
   <div id="toasts" class="toasts" role="region" aria-label="Notifications" aria-live="polite"></div>
 
@@ -212,6 +256,8 @@
   <p id="announcement" class="sr-only" role="status" aria-live="polite"></p>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="workspace-data.js" defer></script>
+  <script src="workspace.js" defer></script>
   <script src="app.js" defer></script>
 </body>
 </html>
