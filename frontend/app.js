@@ -16,7 +16,8 @@
     timer: null, loading: false, map: null, mapLayer: null, markers: new Map(),
     duel: false, duelMaps: [], duelLayers: [], exploratory: false,
     exploratoryWeights: null, paletteItems: [], paletteIndex: 0, paletteReturn: null,
-    fitPending: false, datasetVersion: 0, loadedAt: null, sourceName: null, sourceType: null, sourceFile: null, apiConnected: null, healthBusy: false
+    fitPending: false, datasetVersion: 0, loadedAt: null, sourceName: null, sourceType: null, sourceFile: null, apiConnected: null, healthBusy: false,
+    markerOpacity: 0.9, basemapName: "satellite", imageryDate: new Date(Date.now() - 86400000).toISOString().slice(0, 10), referenceLabels: false
   };
 
   const el = (tag, cls, value) => {
@@ -312,7 +313,8 @@
   }
 
   function mapColor(score) {
-    return score == null || !Number.isFinite(Number(score)) ? "#8b9a91" : `hsl(${Math.max(8, 34 - Math.max(0, Math.min(100, Number(score))) * 0.24)} 86% 57%)`;
+    const value = score == null || !Number.isFinite(Number(score)) ? 0 : Math.max(0, Math.min(100, Number(score)));
+    return `hsl(300 ${12 + value * 0.14}% ${52 + value * 0.18}%)`;
   }
   function setMapFallback(message) {
     if ($("mapFallback")) { $("mapFallback").hidden = false; $("mapFallback").textContent = message; }
@@ -321,13 +323,40 @@
   function initLeafletMap(elementId) {
     if (typeof L === "undefined" || !L.map || !$(elementId)) return null;
     const map = L.map(elementId, { scrollWheelZoom: true, preferCanvas: true }).setView([10, 20], 2);
-    const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors', maxZoom: 19,
-      className: "pyrowatch-geospatial-tiles"
+    const date = state.imageryDate;
+    const gibsAttribution = '<a href="https://earthdata.nasa.gov/eosdis/science-system-description/eosdis-components/gibs">NASA GIBS</a> · MODIS Terra Corrected Reflectance True Color';
+    const basemaps = {
+      satellite: L.tileLayer(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/${date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`, {
+        attribution: gibsAttribution, maxZoom: 19, maxNativeZoom: 9, className: "pyrowatch-geospatial-tiles"
+      }),
+      terrain: L.tileLayer("https://tile.opentopomap.org/{z}/{x}/{y}.png", {
+        attribution: 'Map data: <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a> contributors · Style: <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)', maxZoom: 17, maxNativeZoom: 17
+      }),
+      reference: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors', maxZoom: 19
+      })
+    };
+    const labels = L.tileLayer(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Reference_Labels/default/${date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.png`, {
+      attribution: '<a href="https://earthdata.nasa.gov">NASA Earthdata</a> · Reference Labels', maxZoom: 19, maxNativeZoom: 9, opacity: 0.88
     });
-    tiles.on("tileerror", () => { if (elementId === "map") setText("mapNote", "Basemap tiles unavailable. Observation coordinates and event bounds remain usable; no imagery is inferred."); });
-    tiles.addTo(map);
-    map.pyroTiles = tiles;
+    map.pyroBasemaps = basemaps;
+    map.pyroBaseName = "satellite";
+    map.pyroBaseVisible = true;
+    map.pyroLabels = labels;
+    map.pyroLabelsVisible = false;
+    map._pyroBaseSelect = elementId === "map" ? $("basemapSelect") : null;
+    basemaps.satellite.addTo(map);
+    basemaps.satellite.on("tileerror", () => {
+      if (map.pyroBaseName !== "satellite" || map.pyroFallbackDone) return;
+      map.pyroFallbackDone = true;
+      map.removeLayer(basemaps.satellite);
+      basemaps.reference.addTo(map);
+      map.pyroBaseName = "reference";
+      state.basemapName = "reference";
+      map._pyroBaseSelect && (map._pyroBaseSelect.value = "reference");
+      if (elementId === "map") setText("mapNote", "NASA daily imagery is unavailable for this date or connection. Showing the OpenStreetMap reference basemap; observation markers and event bounds remain available.");
+    });
+    L.control.scale({imperial:false,metric:true,maxWidth:110,position:"bottomleft"}).addTo(map);
     return { map, layer: L.layerGroup().addTo(map) };
   }
   function initMaps() {
@@ -383,9 +412,9 @@
       const color = mapColor(row.score);
       const longitude = Number(row.longitude) + 360 * Math.round((longitudeCenter - Number(row.longitude)) / 360);
       const marker = L.circleMarker([Number(row.latitude), longitude], {
-        radius: key === state.selectedKey ? 8 : 5.5,
-        weight: key === state.selectedKey ? 3 : 1.25,
-        color, fillColor: color, fillOpacity: 0.82,
+        radius: key === state.selectedKey ? 7 : 5,
+        weight: key === state.selectedKey ? 2 : 1,
+        color: "#eee9e0", fillColor: color, opacity: 0.94, fillOpacity: state.markerOpacity,
         className: key === state.selectedKey ? "pyrowatch-observation is-selected" : "pyrowatch-observation"
       }).bindPopup(makePopup(row));
       marker.on("click", () => selectObservation(key, false));
@@ -436,7 +465,7 @@
         const center = wrapped ? (wrapped.west + wrapped.east) / 2 : 0;
         group.filter(validCoordinate).forEach((row, rankIndex) => {
           const rank = rankIndex + 1;
-          const color = index === 0 ? "#ff9042" : "#5fb8ae";
+          const color = index === 0 ? "#a98da4" : "#b7b0a7";
           const icon = L.divIcon({
             className: "duel-badge",
             html: `<span aria-label="Rank ${rank}">${rank}</span>`,
@@ -510,7 +539,7 @@
       const bar = el("div", "waterfall");
       bar.setAttribute("role", "img");
       bar.setAttribute("aria-label", contributions.map(([factor, value]) => `${factor}: ${fmt(value, 2)} points`).join(", "));
-      const colors = ["#8fb8ce", "#7fc992", "#ff9042", "#d9a95a", "#5fb8ae"];
+      const colors = ["#786477", "#897288", "#9b809a", "#ac91aa", "#bea7bc"];
       contributions.forEach(([factor, value], index) => {
         const segment = document.createElement("i");
         segment.style.width = `${Math.max(0, Number(value)) / total * 100}%`;

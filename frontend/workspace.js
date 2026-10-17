@@ -2,10 +2,10 @@
 window.PyroWorkspace = {
   create(context) {
     'use strict';
-    const {state, el, $, fmt, fmtTime, openEvent, selectObservation, setMapMode, checkHealth, upload, loadSample, announce, toast, filteredRows} = context;
+    const {state, el, $, fmt, fmtTime, openEvent, selectObservation, setMapMode, checkHealth, upload, loadSample, announce, toast, filteredRows, render} = context;
     const D = window.PyroData;
     let view = 'dashboard', reportSnapshot = null, reportSelection = null;
-    let globe = null, globeLoading = null, globeActive = false, globeReady = false, boundsLayer = null;
+    let globe = null, globeLoading = null, globeActive = false, globeReady = false, globeSetupStarted = false, boundsLayer = null;
     let eventQuery = '', eventOrder = 'priority', datasetRef = null;
     let detections = true, eventBounds = true, basemap = true;
     const text = (id, value) => { if ($(id)) $(id).textContent = value; };
@@ -23,20 +23,21 @@ window.PyroWorkspace = {
       container.append(list);
     }
     function navigate(next) {
-      if (!['dashboard','events','analytics','reports','data'].includes(next)) return;
-      view = next;
-      $('deck').hidden = next !== 'dashboard';
-      for (const name of ['events','analytics','reports','data']) $('view'+name[0].toUpperCase()+name.slice(1)).hidden = next !== name;
-      for (const name of ['dashboard','events','analytics','reports','data']) {
+      if (!['dashboard','map','events','analytics','reports','data'].includes(next)) return;
+      const active = next;
+      view = next === 'map' ? 'dashboard' : next;
+      $('deck').hidden = view !== 'dashboard';
+      for (const name of ['events','analytics','reports','data']) $('view'+name[0].toUpperCase()+name.slice(1)).hidden = view !== name;
+      for (const name of ['dashboard','map','events','analytics','reports','data']) {
         const node = $('nav'+name[0].toUpperCase()+name.slice(1));
-        if (name === next) node.setAttribute('aria-current','page'); else node.removeAttribute('aria-current');
+        if (name === active) node.setAttribute('aria-current','page'); else node.removeAttribute('aria-current');
       }
       if (next !== 'dashboard') { $('filterRail').hidden=true; $('toggleFilters').setAttribute('aria-expanded','false'); }
-      if (next === 'dashboard') setTimeout(()=>{state.map?.invalidateSize?.();globe?.resize();state.duelMaps.forEach(map=>map.invalidateSize?.());},0);
-      if (next === 'events') renderCatalog();
-      if (next === 'analytics') renderAnalytics();
-      if (next === 'data') renderContext();
-      if (next === 'reports') reportControls();
+      if (view === 'dashboard') setTimeout(()=>{state.map?.invalidateSize?.();globe?.resize();state.duelMaps.forEach(map=>map.invalidateSize?.());if(next==='map')$('mapHeading').scrollIntoView({behavior:'smooth',block:'start'});},0);
+      if (view === 'events') renderCatalog();
+      if (view === 'analytics') renderAnalytics();
+      if (view === 'data') renderContext();
+      if (view === 'reports') reportControls();
     }
     function inspector(section) {
       for (const [id, panel] of [['Event','dossierPanel'],['Score','priorityPanel'],['Observation','observationPanel']]) {
@@ -57,10 +58,11 @@ window.PyroWorkspace = {
       if (!events.length) {box.append(note(state.events.length?'No candidate events match this search.':'Load a dataset to inspect candidate events.'));return;}
       for (const event of events) {
         const item=button('',()=>investigate(event.event_id),'event-row');item.setAttribute('aria-pressed',String(sameId(state.selectedEvent,event.event_id)));
-        const title=el('span','event-top');title.append(el('strong','',`Event ${event.event_id ?? 'unavailable'}`),el('span','event-priority',fmt(event.top_score,1)));
+        const score=D.numeric(event.top_score), title=el('span','event-top');title.append(el('strong','',`Event ${event.event_id ?? 'unavailable'}`),el('span','event-priority',fmt(score,1)));
         const b=D.bounds(D.members(state.rows,event.event_id));
         const location=b?`${fmt((b.south+b.north)/2,3)}°, ${fmt((((b.west+b.east)/2+540)%360)-180,3)}°`:'Coordinates unavailable';
-        item.append(title,el('span','event-meta',`${event.pixels ?? '—'} observations · ${intelligence(event.event_id)?.trend?.status?.replaceAll('_',' ') || 'trend unavailable'}`),el('span','mono',location),el('span','mono',fmtTime(event.last_seen)));
+        const scoreTrack=el('span','event-score-track'),scoreFill=el('i','');scoreFill.style.width=`${Math.max(0,Math.min(100,score??0))}%`;scoreTrack.append(scoreFill);
+        item.append(title,scoreTrack,el('span','event-meta',`${event.pixels ?? '—'} observations · ${intelligence(event.event_id)?.trend?.status?.replaceAll('_',' ') || 'trend unavailable'}`),el('span','mono',location),el('span','mono',fmtTime(event.last_seen)));
         box.append(item);
       }
     }
@@ -180,12 +182,64 @@ window.PyroWorkspace = {
       a.href=url;a.download=`pyrowatch-${reportSnapshot.scope}-${reportSnapshot.generated_at.replace(/[:.]/g,'-')}.${kind}`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);announce(`${kind.toUpperCase()} report downloaded.`);
     }
     function layerVisibility() {
-      if(state.map && state.mapLayer) {
-        if(detections && !state.map.hasLayer(state.mapLayer))state.map.addLayer(state.mapLayer);
-        if(!detections && state.map.hasLayer(state.mapLayer))state.map.removeLayer(state.mapLayer);
-        const tiles=state.map.pyroTiles;if(tiles){if(basemap&&!state.map.hasLayer(tiles))state.map.addLayer(tiles);if(!basemap&&state.map.hasLayer(tiles))state.map.removeLayer(tiles);}
+      for(const map of [state.map,...state.duelMaps].filter(Boolean)) {
+        if(map===state.map && state.mapLayer) {
+          if(detections && !map.hasLayer(state.mapLayer))map.addLayer(state.mapLayer);
+          if(!detections && map.hasLayer(state.mapLayer))map.removeLayer(state.mapLayer);
+        }
+        const base=map.pyroBasemaps?.[state.basemapName];
+        if(base && basemap && !map.hasLayer(base))map.addLayer(base);
+        for(const layer of Object.values(map.pyroBasemaps||{}))if(layer!==base&&map.hasLayer(layer))map.removeLayer(layer);
+        if(map.pyroLabels) {
+          if(state.referenceLabels && !map.hasLayer(map.pyroLabels))map.addLayer(map.pyroLabels);
+          if(!state.referenceLabels && map.hasLayer(map.pyroLabels))map.removeLayer(map.pyroLabels);
+        }
+        if(base && !basemap && map.hasLayer(base))map.removeLayer(base);
       }
-      if(globeReady)for(const [id,visible] of [['observations',detections],['selected-observation',detections],['event-bounds',eventBounds],['basemap',basemap]])if(globe.getLayer(id))globe.setLayoutProperty(id,'visibility',visible?'visible':'none');
+      if(globeReady) {
+        for(const [id,name] of [['basemap-satellite','satellite'],['basemap-terrain','terrain'],['basemap-reference','reference']])if(globe.getLayer(id))globe.setLayoutProperty(id,'visibility',basemap&&state.basemapName===name?'visible':'none');
+        for(const [id,visible] of [['observations',detections],['selected-observation',detections],['event-bounds',eventBounds],['reference-labels',basemap&&state.referenceLabels]])if(globe.getLayer(id))globe.setLayoutProperty(id,'visibility',visible?'visible':'none');
+        const opacity=Number(state.markerOpacity)||0.9;
+        if(globe.getLayer('observations'))globe.setPaintProperty('observations','circle-opacity',opacity);
+        if(globe.getLayer('selected-observation'))globe.setPaintProperty('selected-observation','circle-opacity',opacity);
+      }
+    }
+    function gibsLayer(map, layer, date, format) {
+      const attribution='<a href="https://earthdata.nasa.gov/eosdis/science-system-description/eosdis-components/gibs">NASA GIBS</a> · MODIS Terra Corrected Reflectance True Color';
+      return L.tileLayer(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${layer}/default/${date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.${format}`,{attribution,maxZoom:19,maxNativeZoom:9,opacity:layer==='Reference_Labels'?0.88:1});
+    }
+    function applyBasemap(name=state.basemapName,date=state.imageryDate) {
+      state.basemapName=name;
+      const dateChanged=date!==state.imageryDate;
+      state.imageryDate=date;
+      for(const map of [state.map,...state.duelMaps].filter(Boolean)) {
+        if(dateChanged && map.pyroBasemaps?.satellite) {
+          if(map.hasLayer(map.pyroBasemaps.satellite))map.removeLayer(map.pyroBasemaps.satellite);
+          if(map.pyroLabels&&map.hasLayer(map.pyroLabels))map.removeLayer(map.pyroLabels);
+          map.pyroBasemaps.satellite=gibsLayer(map,'MODIS_Terra_CorrectedReflectance_TrueColor',date,'jpg');
+          map.pyroLabels=gibsLayer(map,'Reference_Labels',date,'png');
+          map.pyroBasemaps.satellite.on('tileerror',()=>{if(map.pyroBaseName!=='satellite')return;state.basemapName='reference';map.pyroBaseName='reference';$('basemapSelect').value='reference';if(map===state.map)text('mapNote','NASA daily imagery is unavailable for this date or connection. Showing the OpenStreetMap reference basemap; observation markers and event bounds remain available.');layerVisibility();});
+        }
+        map.pyroBaseName=name;
+        map._pyroBaseSelect=$('basemapSelect');
+      }
+      $('basemapSelect').value=name;
+      $('mapDateControl').hidden=name!=='satellite';
+      if(name==='satellite')text('mapNote','NASA GIBS MODIS true-colour imagery · daily product. Background acquisition can differ from detections; clouds and smoke can obscure the ground. Imagery does not confirm a fire. Event bounds enclose observations and are not perimeters.');
+      else if(name==='terrain')text('mapNote','OpenTopoMap terrain with OpenStreetMap data. Terrain is contextual reference, not evidence of fire activity. Event bounds enclose observations and are not perimeters.');
+      else text('mapNote','OpenStreetMap reference basemap. Event bounds enclose observed coordinates and are not fire perimeters.');
+      layerVisibility();
+      if(globeReady && dateChanged) {
+        globe.removeLayer('basemap-satellite');
+        globe.removeSource('satellite');
+        globe.addSource('satellite',{type:'raster',tiles:[`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/${date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`],tileSize:256,maxzoom:9,attribution:'NASA GIBS · MODIS Terra Corrected Reflectance True Color'});
+        globe.addLayer({id:'basemap-satellite',type:'raster',source:'satellite',layout:{visibility:'none'}},'observations');
+        globe.removeLayer('reference-labels');
+        globe.removeSource('labels');
+        globe.addSource('labels',{type:'raster',tiles:[`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Reference_Labels/default/${date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.png`],tileSize:256,maxzoom:9,attribution:'NASA Earthdata · Reference Labels'});
+        globe.addLayer({id:'reference-labels',type:'raster',source:'labels',layout:{visibility:'none'},paint:{'raster-opacity':0.88}},'observations');
+        renderGlobe();
+      }
     }
     function renderBounds() {
       if(!state.map || typeof L==='undefined')return;
@@ -193,11 +247,11 @@ window.PyroWorkspace = {
       boundsLayer.clearLayers();
       if(eventBounds) {
         const members=selectedMembers(), b=D.bounds(members);
-        if(b && b.west!==b.east && b.south!==b.north)L.rectangle([[b.south,b.west],[b.north,b.east]],{color:'#65bec9',weight:2,fillOpacity:.08,dashArray:'5 5',interactive:false}).addTo(boundsLayer);
+        if(b && b.west!==b.east && b.south!==b.north)L.rectangle([[b.south,b.west],[b.north,b.east]],{color:'#b7a2b5',weight:1.5,fillColor:'#b7a2b5',fillOpacity:.06,dashArray:'4 4',interactive:false}).addTo(boundsLayer);
         const row=state.rows.find(row=>state.keys.get(row)===state.selectedKey);
         if(row && D.coordinate(row)) {
           const center=b?(b.west+b.east)/2:Number(row.longitude), lon=Number(row.longitude)+360*Math.round((center-Number(row.longitude))/360);
-          L.circleMarker([Number(row.latitude),lon],{radius:11,weight:2,color:'#95e4ec',fillOpacity:0,interactive:false}).addTo(boundsLayer);
+          L.circleMarker([Number(row.latitude),lon],{radius:9,weight:1.5,color:'#f0ebe2',fillOpacity:0,interactive:false}).addTo(boundsLayer);
         }
       }
       layerVisibility();
@@ -242,23 +296,52 @@ window.PyroWorkspace = {
       text('globeStatus','Loading globe renderer…');$('modeGlobe').classList.toggle('is-active',true);$('modeGlobe').setAttribute('aria-pressed','true');$('modeSample').classList.toggle('is-active',false);$('modeSample').setAttribute('aria-pressed','false');
       try {
         await loadGlobeLibrary();if(!globeActive)return;
-        if(globe){globe.resize();renderGlobe();focusGlobe(filteredRows());text('globeStatus','Globe · OpenStreetMap reference tiles; no elevation or satellite imagery. Drag to rotate; right-drag to tilt.');return;}
+        if(globe){globe.resize();renderGlobe();focusGlobe(filteredRows());text('globeStatus','Globe · NASA GIBS daily true-colour imagery. Background date may differ from detections; clouds and smoke obscure ground.');return;}
         globe=new window.maplibregl.Map({container:'globeMap',center:[0,10],zoom:.4,maxZoom:17,attributionControl:true,
-          style:{version:8,projection:{type:'globe'},sources:{osm:{type:'raster',tiles:['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],tileSize:256,maxzoom:19,attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}},layers:[{id:'background',type:'background',paint:{'background-color':'#171b18'}},{id:'basemap',type:'raster',source:'osm',paint:{'raster-saturation':-.7,'raster-brightness-min':.12,'raster-brightness-max':.82,'raster-contrast':.08,'raster-fade-duration':0}}]}});
+          style:{version:8,projection:{type:'globe'},sources:{},layers:[
+            {id:'background',type:'background',paint:{'background-color':'#171614'}}
+          ]}});
         globe.addControl(new window.maplibregl.NavigationControl({visualizePitch:true}),'top-right');
-        globe.on('error',event=>text('globeStatus',`Globe map error: ${event.error?.message || 'a map resource could not be loaded'}. Use 2D or the observation table; map tiles require an internet connection.`));
-        globe.on('load',()=>{
-          globeReady=true;globe.setProjection({type:'globe'});
-          globe.addSource('detections',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
-          globe.addLayer({id:'observations',type:'circle',source:'detections',paint:{'circle-radius':4,'circle-color':['case',['get','hasScore'],['interpolate',['linear'],['get','score'],0,'#969b86',50,'#c69a58',100,'#bd6139'],'#8d9387'],'circle-opacity':.94,'circle-stroke-width':.7,'circle-stroke-color':'#272b25'}});
-          globe.addLayer({id:'selected-observation',type:'circle',source:'detections',filter:['==',['get','selected'],true],paint:{'circle-radius':9,'circle-color':'#c97843','circle-opacity':.25,'circle-stroke-width':2,'circle-stroke-color':'#e1a16c'}});
-          globe.addSource('bounds',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
-          globe.addLayer({id:'event-bounds',type:'line',source:'bounds',paint:{'line-color':'#c97843','line-width':2,'line-dasharray':[3,2]}});
-          globe.on('click','observations',event=>{const key=event.features?.[0]?.properties?.key;if(key)selectObservation(key,false);});
-          globe.on('mouseenter','observations',()=>{globe.getCanvas().style.cursor='pointer';});globe.on('mouseleave','observations',()=>{globe.getCanvas().style.cursor='';});
-          globe.on('mousemove',event=>text('mapCoordinates',`${fmt(event.lngLat.lat,5)}°, ${fmt(event.lngLat.lng,5)}° · WGS84 globe`));
-          text('globeStatus','Globe · OpenStreetMap reference tiles; no elevation or satellite imagery. Drag to rotate; right-drag to tilt.');renderGlobe();focusGlobe(filteredRows());
+        globe.addControl(new window.maplibregl.ScaleControl({unit:'metric'}),'bottom-left');
+        globe.on('error',event=>{
+          if(event.sourceId==='satellite' && state.basemapName==='satellite') {
+            state.basemapName='reference';$('basemapSelect').value='reference';layerVisibility();
+            text('mapNote','NASA daily imagery is unavailable for this date or connection. Showing the OpenStreetMap reference basemap; observation markers and event bounds remain available.');
+          }
+          text('globeStatus',`Globe map error: ${event.error?.message || 'a map resource could not be loaded'}. Reference tiles remain available; map tiles require an internet connection.`);
         });
+        const initializeGlobe = () => {
+          if(globeSetupStarted || !globeActive)return;
+          globeSetupStarted=true;
+          try {
+            globe.setProjection({type:'globe'});
+            globe.addSource('satellite',{type:'raster',tiles:[`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/${state.imageryDate}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`],tileSize:256,maxzoom:9,attribution:'NASA GIBS · MODIS Terra Corrected Reflectance True Color'});
+            globe.addSource('terrain',{type:'raster',tiles:['https://tile.opentopomap.org/{z}/{x}/{y}.png'],tileSize:256,maxzoom:17,attribution:'Map data © OpenStreetMap contributors · OpenTopoMap CC-BY-SA'});
+            globe.addSource('reference',{type:'raster',tiles:['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],tileSize:256,maxzoom:19,attribution:'© OpenStreetMap contributors'});
+            globe.addSource('labels',{type:'raster',tiles:[`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Reference_Labels/default/${state.imageryDate}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.png`],tileSize:256,maxzoom:9,attribution:'NASA Earthdata · Reference Labels'});
+            globe.addLayer({id:'basemap-satellite',type:'raster',source:'satellite',layout:{visibility:'visible'}});
+            globe.addLayer({id:'basemap-terrain',type:'raster',source:'terrain',layout:{visibility:'none'}});
+            globe.addLayer({id:'basemap-reference',type:'raster',source:'reference',layout:{visibility:'none'}});
+            globe.addLayer({id:'reference-labels',type:'raster',source:'labels',layout:{visibility:'none'},paint:{'raster-opacity':0.88}});
+            globe.addSource('detections',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+            globe.addLayer({id:'observations',type:'circle',source:'detections',paint:{'circle-radius':4,'circle-color':['case',['get','hasScore'],['interpolate',['linear'],['get','score'],0,'#8c7889',50,'#a38ca1',100,'#c0aac0'],'#a39c94'],'circle-opacity':state.markerOpacity,'circle-stroke-width':.8,'circle-stroke-color':'#eee8df'}});
+            globe.addLayer({id:'selected-observation',type:'circle',source:'detections',filter:['==',['get','selected'],true],paint:{'circle-radius':7,'circle-color':'#a98da4','circle-opacity':state.markerOpacity,'circle-stroke-width':2,'circle-stroke-color':'#f0ebe2'}});
+            globe.addSource('bounds',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+            globe.addLayer({id:'event-bounds',type:'line',source:'bounds',paint:{'line-color':'#b7a2b5','line-width':1.5,'line-dasharray':[3,2]}});
+            globe.on('click','observations',event=>{const key=event.features?.[0]?.properties?.key;if(key)selectObservation(key,false);});
+            globe.on('mouseenter','observations',()=>{globe.getCanvas().style.cursor='pointer';});globe.on('mouseleave','observations',()=>{globe.getCanvas().style.cursor='';});
+            globe.on('mousemove',event=>text('mapCoordinates',`${fmt(event.lngLat.lat,5)}°, ${fmt(event.lngLat.lng,5)}° · WGS84 globe`));
+            globeReady=true;layerVisibility();text('globeStatus','Globe · NASA GIBS daily true-colour imagery. Background date may differ from detections; clouds and smoke obscure ground.');renderGlobe();focusGlobe(filteredRows());
+          } catch(error) {
+            text('globeStatus',`Globe initialization failed: ${error.message}. Use the 2D map or observation table; no map data was changed.`);
+          }
+        };
+        const initializeWhenStyleReady = () => { if(globe.isStyleLoaded())initializeGlobe(); };
+        globe.on('style.load',initializeGlobe);
+        globe.on('load',initializeGlobe);
+        globe.on('styledata',initializeWhenStyleReady);
+        globe.on('render',initializeWhenStyleReady);
+        if(globe.isStyleLoaded())initializeGlobe();
       } catch(error) { text('globeStatus',`${error.message} Use the 2D map or observation table. WebGL and a reachable MapLibre CDN are required.`); }
     }
     function renderGlobe() {
@@ -292,7 +375,7 @@ window.PyroWorkspace = {
       renderBounds();renderGlobe();reportControls();
       if(view==='events')renderCatalog();if(view==='analytics')renderAnalytics();if(view==='data')renderContext();
     }
-    for(const name of ['dashboard','events','analytics','reports','data'])on('nav'+name[0].toUpperCase()+name.slice(1),'click',()=>navigate(name));
+    for(const name of ['dashboard','map','events','analytics','reports','data'])on('nav'+name[0].toUpperCase()+name.slice(1),'click',()=>navigate(name));
     for(const section of ['Event','Score','Observation'])on('inspect'+section,'click',()=>inspector(section));
     on('openData','click',()=>navigate('data'));on('dataSample','click',loadSample);
     on('uploadLabel','keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();$('file').click();}});
@@ -307,9 +390,17 @@ window.PyroWorkspace = {
     on('layerDetections','change',event=>{detections=event.target.checked;layerVisibility();saveLayers();});
     on('layerBounds','change',event=>{eventBounds=event.target.checked;renderBounds();layerVisibility();saveLayers();});
     on('layerBasemap','change',event=>{basemap=event.target.checked;layerVisibility();saveLayers();});
-    function saveLayers(){try{window.localStorage?.setItem('pyrowatch.layers.v1',JSON.stringify({detections,eventBounds,basemap}));}catch(_){/* Preferences are optional. */}}
-    try {const saved=JSON.parse(window.localStorage?.getItem('pyrowatch.layers.v1')||'null');if(saved){detections=saved.detections!==false;eventBounds=saved.eventBounds!==false;basemap=saved.basemap!==false;}}catch(_){/* Ignore malformed local preferences. */}
-    $('layerDetections').checked=detections;$('layerBounds').checked=eventBounds;$('layerBasemap').checked=basemap;
+    on('layerLabels','change',event=>{state.referenceLabels=event.target.checked;layerVisibility();saveLayers();});
+    on('basemapSelect','change',event=>applyBasemap(event.target.value));
+    on('imageryDate','change',event=>{if(event.target.value)applyBasemap(state.basemapName,event.target.value);});
+    on('markerOpacity','input',event=>{state.markerOpacity=Number(event.target.value);text('markerOpacityValue',`${Math.round(state.markerOpacity*100)}%`);render();});
+    $('imageryDate').value=state.imageryDate;
+    $('markerOpacity').value=String(state.markerOpacity);
+    $('markerOpacityValue').textContent=`${Math.round(state.markerOpacity*100)}%`;
+    function saveLayers(){try{window.localStorage?.setItem('pyrowatch.layers.v1',JSON.stringify({detections,eventBounds,basemap,referenceLabels:state.referenceLabels}));}catch(_){/* Preferences are optional. */}}
+    try {const saved=JSON.parse(window.localStorage?.getItem('pyrowatch.layers.v1')||'null');if(saved){detections=saved.detections!==false;eventBounds=saved.eventBounds!==false;basemap=saved.basemap!==false;state.referenceLabels=saved.referenceLabels===true;}}catch(_){/* Ignore malformed local preferences. */}
+    $('layerDetections').checked=detections;$('layerBounds').checked=eventBounds;$('layerBasemap').checked=basemap;$('layerLabels').checked=state.referenceLabels;
+    applyBasemap(state.basemapName,state.imageryDate);
     window.addEventListener?.('resize',()=>{state.map?.invalidateSize?.();if(globeActive)globe?.resize();});
     return {navigate,renderExplorer,update,selectionChanged,datasetChanged,leaveGlobe};
   }

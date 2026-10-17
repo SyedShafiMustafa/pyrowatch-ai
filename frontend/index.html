@@ -5,7 +5,8 @@
   <meta name="color-scheme" content="dark">
   <title>PyroWatch | Geospatial Intelligence</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
-  <link rel="stylesheet" href="style.css?v=gis-20261017b">
+  <link rel="stylesheet" href="style.css?v=workstation-20261017b">
+  <link rel="stylesheet" href="design-tokens.css?v=workstation-20261017b">
 
 </head>
 <body>
@@ -34,10 +35,11 @@
   <nav class="workspace-nav" aria-label="Primary navigation">
     <div class="nav-links">
       <button id="navDashboard" aria-current="page" type="button"><span>01</span> Dashboard</button>
-      <button id="navEvents" type="button"><span>02</span> Events</button>
-      <button id="navAnalytics" type="button"><span>03</span> Analytics</button>
-      <button id="navReports" type="button"><span>04</span> Reports</button>
-      <button id="navData" type="button"><span>05</span> Data operations</button>
+      <button id="navMap" type="button"><span>02</span> Map</button>
+      <button id="navEvents" type="button"><span>03</span> Events</button>
+      <button id="navAnalytics" type="button"><span>04</span> Analytics</button>
+      <button id="navReports" type="button"><span>05</span> Reports</button>
+      <button id="navData" type="button"><span>06</span> Data</button>
     </div>
     <div class="nav-context"><span class="status-dot" aria-hidden="true"></span> Request-based analysis <button id="healthRefresh" class="text-button" type="button">Check API</button></div>
   </nav>
@@ -116,7 +118,7 @@
 
       <section class="panel map-card" aria-labelledby="mapHeading">
         <div class="panel-head">
-          <div><p class="eyebrow">GEOSPATIAL WORKSPACE</p><h2 id="mapHeading">Observation map</h2><span class="map-legend"><i class="legend-ramp" aria-hidden="true"></i><span>Marker color = review-priority score (0 to 100), not a fire probability</span></span></div>
+          <div><p class="eyebrow">GEOSPATIAL WORKSPACE</p><h2 id="mapHeading">Observation map</h2>          <span class="map-legend"><i class="legend-ramp" aria-hidden="true"></i><span>Marker tone = official review priority (0–100), not a fire probability</span></span></div>
           <div class="seg" role="group" aria-label="Map mode">
             <button id="modeSample" class="seg-btn is-active" type="button" aria-pressed="true">2D map</button>
             <button id="modeGlobe" class="seg-btn" type="button" aria-pressed="false">Globe</button>
@@ -124,7 +126,12 @@
           </div>
         </div>
         <div class="map-toolbar">
-          <div class="layer-options"><label><input id="layerDetections" type="checkbox" checked> Detections</label><label><input id="layerBounds" type="checkbox" checked> Event bounds</label><label><input id="layerBasemap" type="checkbox" checked> Basemap</label></div>
+          <div class="map-layer-tools">
+            <div class="layer-options"><label><input id="layerDetections" type="checkbox" checked> Markers</label><label><input id="layerBounds" type="checkbox" checked> Event bounds</label><label><input id="layerLabels" type="checkbox"> Reference labels</label><label><input id="layerBasemap" type="checkbox" checked> Basemap</label></div>
+            <label class="map-control">Basemap<select id="basemapSelect" aria-label="Basemap"><option value="satellite">Satellite · NASA daily true colour</option><option value="terrain">Terrain · OpenTopoMap</option><option value="reference">Reference · OpenStreetMap</option></select></label>
+            <label class="map-control map-date-control" id="mapDateControl">Imagery date (UTC)<input id="imageryDate" type="date"></label>
+            <label class="map-control map-opacity-control">Marker opacity <input id="markerOpacity" type="range" min="0.2" max="1" step="0.05" value="0.9"><output id="markerOpacityValue" for="markerOpacity">90%</output></label>
+          </div>
           <div><button id="zoomEvent" class="text-button" type="button" disabled>Locate event</button><button id="mapOverview" class="text-button" type="button">Overview</button></div>
         </div>
         <div class="map-stage">
@@ -140,7 +147,7 @@
           </div>
         </div>
         <div id="mapFallback" class="map-fallback" role="status">Map is initializing. The ranking list remains available.</div>
-        <p class="panel-note" id="mapNote">OpenStreetMap reference basemap. Event bounds enclose observed coordinates; they are not fire perimeters.</p>
+        <p class="panel-note" id="mapNote">NASA GIBS MODIS true-colour imagery · daily product. Background acquisition can differ from detections; clouds and smoke can obscure the ground. Imagery does not confirm a fire. Event bounds enclose observations and are not perimeters.</p>
         <p id="mapCoordinates" class="coordinate-readout mono">Move over the map to inspect coordinates.</p>
         <div id="compareExplain" class="compare-explain" hidden></div>
       </section>
@@ -257,7 +264,7 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="workspace-data.js" defer></script>
-  <script src="workspace.js?v=gis-20261017c" defer></script>
-  <script src="app.js" defer></script>
+  <script src="workspace.js?v=workstation-20261017d" defer></script>
+  <script src="app.js?v=workstation-20261017a" defer></script>
 </body>
 </html>
