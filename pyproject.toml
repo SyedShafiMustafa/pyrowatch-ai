@@ -1,0 +1,15 @@
+[project]
+name = "pyrowatch-ai"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.110",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "python-multipart>=0.0.9",
+    "requests>=2.31",
+    "scikit-learn>=1.4",
+]
+
+[tool.vercel]
+entrypoint = "backend.app.main:app"

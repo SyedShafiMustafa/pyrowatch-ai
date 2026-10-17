@@ -1,0 +1,6 @@
+latitude,longitude,bright_ti4,acq_date,acq_time,satellite,instrument,confidence,frp,daynight,note
+10,179.999,340,2026-10-10,0000,N20,VIIRS,h,0,D,"Synthetic UI fixture; not a genuine FIRMS observation"
+10.001,-179.999,345,2026-10-10,0600,N20,VIIRS,h,5,D,"<img src=x onerror=alert(1)>"
+10.002,179.998,350,2026-10-10,1200,N20,VIIRS,n,10,D,"Synthetic UI fixture; not a genuine FIRMS observation"
+10,179.999,340,2026-10-10,0000,N20,VIIRS,h,0,D,"Synthetic duplicate for ingestion check"
+100,20,340,2026-10-10,0000,N20,VIIRS,h,0,D,"Synthetic invalid latitude"

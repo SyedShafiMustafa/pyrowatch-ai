@@ -4,6 +4,7 @@
   const API_BASE_URL = window.location?.port === "5500"
     ? "http://127.0.0.1:8010"
     : window.location?.origin || "http://127.0.0.1:8010";
+  let workspace = null;
   const PAGE_SIZE = 50;
   const FACTORS = ["recency", "confidence", "frp", "repeats", "brightness"];
   const $ = id => document.getElementById(id);
@@ -15,7 +16,8 @@
     timer: null, loading: false, map: null, mapLayer: null, markers: new Map(),
     duel: false, duelMaps: [], duelLayers: [], exploratory: false,
     exploratoryWeights: null, paletteItems: [], paletteIndex: 0, paletteReturn: null,
-    fitPending: false
+    fitPending: false, datasetVersion: 0, loadedAt: null, sourceName: null, sourceType: null, sourceFile: null, apiConnected: null, healthBusy: false,
+    markerOpacity: 0.9, basemapName: "satellite", imageryDate: new Date(Date.now() - 86400000).toISOString().slice(0, 10), referenceLabels: false
   };
 
   const el = (tag, cls, value) => {
@@ -46,8 +48,10 @@
       response = await fetch(new URL(path, API_BASE_URL), { ...options, signal: controller.signal });
     } catch (error) {
       clearTimeout(timeout);
+      state.apiConnected = false;
       throw new Error(error.name === "AbortError" ? "The API request timed out. Try again." : "Could not reach the API. Check the connection and retry.");
     }
+    state.apiConnected = true;
     clearTimeout(timeout);
     const contentType = response.headers.get("content-type") || "";
     let body;
@@ -150,7 +154,13 @@
     }
   }
 
-  function replaceDataset(parsed, message) {
+  function replaceDataset(parsed, message, source = {}) {
+    state.datasetVersion += 1;
+    state.keys = new WeakMap();
+    state.loadedAt = new Date().toISOString();
+    state.sourceName = source.name || null; state.sourceType = source.type || null; state.sourceFile = source.file || null;
+    state.apiConnected = true;
+    workspace?.datasetChanged();
     assignKeys(parsed.rows);
     state.rows = parsed.rows;
     state.fitPending = true;
@@ -163,6 +173,7 @@
     state.provenance = parsed.provenance;
     state.selectedKey = null;
     state.selectedEvent = null;
+    for (const id of ["detailContent", "scoreContent", "dossierContent"]) $(id)?.replaceChildren(el("p", "panel-note", "Select an event or observation to investigate."));
     state.search = "";
     state.filters = { confidenceMin: 0, frpMin: null, fromDate: "", toDate: "", satellite: "", daynight: "", staticOnly: false, event: "" };
     state.sort = "score";
@@ -198,6 +209,8 @@
   }
   function setLoading(loading) {
     state.loading = loading;
+    if ($("refreshData")) $("refreshData").disabled = loading || !state.sourceType;
+    if ($("dataSample")) $("dataSample").disabled = loading;
     if ($("bSample")) $("bSample").disabled = loading;
     if ($("file")) $("file").disabled = loading;
     if ($("ingestXray")) $("ingestXray").hidden = !loading;
@@ -209,7 +222,7 @@
     state.message = "Loading the synthetic sample…";
     renderStatus();
     try {
-      replaceDataset(parseResponse(await request("/api/sample")), "Synthetic sample loaded from the API.");
+      replaceDataset(parseResponse(await request("/api/sample")), "Synthetic sample loaded from the API.", {type:"sample", name:"synthetic_sample.csv"});
     } catch (error) {
       showRequestError("Sample load failed", error);
     } finally { setLoading(false); }
@@ -223,7 +236,7 @@
     const form = new FormData();
     form.append("file", file);
     try {
-      replaceDataset(parseResponse(await request("/api/upload", { method: "POST", body: form })), `CSV processed: ${file.name}. Provenance remains unverified.`);
+      replaceDataset(parseResponse(await request("/api/upload", { method: "POST", body: form })), `CSV processed: ${file.name}. Provenance remains unverified.`, {type:"upload", name:file.name, file});
       toast("Upload processed. Counts below are reported by the API.", "ok");
     } catch (error) {
       showRequestError("Upload failed", error);
@@ -300,7 +313,8 @@
   }
 
   function mapColor(score) {
-    return score == null || !Number.isFinite(Number(score)) ? "#8b9a91" : `hsl(${Math.max(8, 34 - Math.max(0, Math.min(100, Number(score))) * 0.24)} 86% 57%)`;
+    const value = score == null || !Number.isFinite(Number(score)) ? 0 : Math.max(0, Math.min(100, Number(score)));
+    return `hsl(300 ${12 + value * 0.14}% ${52 + value * 0.18}%)`;
   }
   function setMapFallback(message) {
     if ($("mapFallback")) { $("mapFallback").hidden = false; $("mapFallback").textContent = message; }
@@ -308,22 +322,41 @@
   }
   function initLeafletMap(elementId) {
     if (typeof L === "undefined" || !L.map || !$(elementId)) return null;
-    const map = L.map(elementId, { scrollWheelZoom: false }).setView([-33, 150.3], 4);
-    const darkTiles = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-      attribution: "© OpenStreetMap contributors © CARTO", maxZoom: 20, subdomains: "abcd",
-      className: "pyrowatch-geospatial-tiles"
+    const map = L.map(elementId, { scrollWheelZoom: true, preferCanvas: true }).setView([10, 20], 2);
+    const date = state.imageryDate;
+    const gibsAttribution = '<a href="https://earthdata.nasa.gov/eosdis/science-system-description/eosdis-components/gibs">NASA GIBS</a> · MODIS Terra Corrected Reflectance True Color';
+    const basemaps = {
+      satellite: L.tileLayer(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/${date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`, {
+        attribution: gibsAttribution, maxZoom: 19, maxNativeZoom: 9, className: "pyrowatch-geospatial-tiles"
+      }),
+      terrain: L.tileLayer("https://tile.opentopomap.org/{z}/{x}/{y}.png", {
+        attribution: 'Map data: <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a> contributors · Style: <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)', maxZoom: 17, maxNativeZoom: 17
+      }),
+      reference: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors', maxZoom: 19
+      })
+    };
+    const labels = L.tileLayer(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Reference_Labels/default/${date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.png`, {
+      attribution: '<a href="https://earthdata.nasa.gov">NASA Earthdata</a> · Reference Labels', maxZoom: 19, maxNativeZoom: 9, opacity: 0.88
     });
-    let usedFallback = false;
-    darkTiles.on("tileerror", () => {
-      if (usedFallback) return;
-      usedFallback = true;
-      map.removeLayer(darkTiles);
-      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "© OpenStreetMap contributors", maxZoom: 19,
-        className: "pyrowatch-geospatial-tiles"
-      }).addTo(map);
+    map.pyroBasemaps = basemaps;
+    map.pyroBaseName = "satellite";
+    map.pyroBaseVisible = true;
+    map.pyroLabels = labels;
+    map.pyroLabelsVisible = false;
+    map._pyroBaseSelect = elementId === "map" ? $("basemapSelect") : null;
+    basemaps.satellite.addTo(map);
+    basemaps.satellite.on("tileerror", () => {
+      if (map.pyroBaseName !== "satellite" || map.pyroFallbackDone) return;
+      map.pyroFallbackDone = true;
+      map.removeLayer(basemaps.satellite);
+      basemaps.reference.addTo(map);
+      map.pyroBaseName = "reference";
+      state.basemapName = "reference";
+      map._pyroBaseSelect && (map._pyroBaseSelect.value = "reference");
+      if (elementId === "map") setText("mapNote", "NASA daily imagery is unavailable for this date or connection. Showing the OpenStreetMap reference basemap; observation markers and event bounds remain available.");
     });
-    darkTiles.addTo(map);
+    L.control.scale({imperial:false,metric:true,maxWidth:110,position:"bottomleft"}).addTo(map);
     return { map, layer: L.layerGroup().addTo(map) };
   }
   function initMaps() {
@@ -334,7 +367,7 @@
       state.mapLayer = primary.layer;
       $("map").hidden = false;
       $("mapFallback").hidden = true;
-      state.map.on("click", () => {});
+      state.map.on("mousemove", event => setText("mapCoordinates", `${fmt(event.latlng.lat,5)}°, ${fmt(event.latlng.lng,5)}° · WGS84`));
     } catch (_) { setMapFallback("Map could not be initialized. The ranked list remains available."); }
   }
   function fitMap(map, markers) {
@@ -371,14 +404,17 @@
     state.markers.clear();
     const valid = rows.filter(validCoordinate);
     const plotted = valid.slice(0, 1500);
+    const wrapped = window.PyroData?.bounds(plotted);
+    const longitudeCenter = wrapped ? (wrapped.west + wrapped.east) / 2 : 0;
     const markerList = [];
     for (const row of plotted) {
       const key = state.keys.get(row);
       const color = mapColor(row.score);
-      const marker = L.circleMarker([Number(row.latitude), Number(row.longitude)], {
-        radius: key === state.selectedKey ? 8 : 5.5,
-        weight: key === state.selectedKey ? 3 : 1.25,
-        color, fillColor: color, fillOpacity: 0.82,
+      const longitude = Number(row.longitude) + 360 * Math.round((longitudeCenter - Number(row.longitude)) / 360);
+      const marker = L.circleMarker([Number(row.latitude), longitude], {
+        radius: key === state.selectedKey ? 7 : 5,
+        weight: key === state.selectedKey ? 2 : 1,
+        color: "#eee9e0", fillColor: color, opacity: 0.94, fillOpacity: state.markerOpacity,
         className: key === state.selectedKey ? "pyrowatch-observation is-selected" : "pyrowatch-observation"
       }).bindPopup(makePopup(row));
       marker.on("click", () => selectObservation(key, false));
@@ -387,7 +423,8 @@
       markerList.push(marker);
     }
     if (state.fitPending) {
-      fitMap(state.map, markerList);
+      if (window.PyroData) { const bounds=window.PyroData.bounds(plotted); if(bounds)state.map.fitBounds([[bounds.south,bounds.west],[bounds.north,bounds.east]],{maxZoom:10}); }
+      else fitMap(state.map, markerList);
       state.fitPending = false;
     }
     if ($("mapFallback")) {
@@ -424,15 +461,18 @@
         const layer = state.duelLayers[index];
         layer.clearLayers();
         const markers = [];
+        const wrapped = window.PyroData?.bounds(group);
+        const center = wrapped ? (wrapped.west + wrapped.east) / 2 : 0;
         group.filter(validCoordinate).forEach((row, rankIndex) => {
           const rank = rankIndex + 1;
-          const color = index === 0 ? "#ff9042" : "#5fb8ae";
+          const color = index === 0 ? "#a98da4" : "#b7b0a7";
           const icon = L.divIcon({
             className: "duel-badge",
             html: `<span aria-label="Rank ${rank}">${rank}</span>`,
             iconSize: [24, 24], iconAnchor: [12, 12]
           });
-          const marker = L.marker([Number(row.latitude), Number(row.longitude)], { icon })
+          const longitude = Number(row.longitude) + 360 * Math.round((center - Number(row.longitude)) / 360);
+          const marker = L.marker([Number(row.latitude), longitude], { icon })
             .bindPopup(makePopup(row)).on("click", () => selectObservation(state.keys.get(row), false));
           marker.addTo(layer);
           markers.push(marker);
@@ -468,6 +508,7 @@
   }
   function setMapMode(duel) {
     state.duel = duel;
+    workspace?.leaveGlobe();
     if ($("modeSample")) { $("modeSample").classList.toggle("is-active", !duel); $("modeSample").setAttribute("aria-pressed", String(!duel)); }
     if ($("modeDuel")) { $("modeDuel").classList.toggle("is-active", duel); $("modeDuel").setAttribute("aria-pressed", String(duel)); }
     if ($("duelWrap")) $("duelWrap").hidden = !duel;
@@ -491,14 +532,14 @@
       box.append(el("p", "badge ember", value == null ? "Exploratory score unavailable" : `Exploratory order: ${fmt(value, 1)} / 100`));
     }
     box.append(el("p", "why-line", row.why || "Explanation unavailable."));
-    const contributions = FACTORS.map(factor => [factor, row[`c_${factor}`]]).filter(([, value]) => value != null && Number.isFinite(Number(value)));
+    const contributions = FACTORS.map(factor => [factor, row[`c_${factor}`]]).filter(([, value]) => value != null && value !== "" && Number.isFinite(Number(value)));
     if (contributions.length) {
       box.append(el("h3", "score-heading", "Server-reported contributions"));
       const total = contributions.reduce((sum, [, value]) => sum + Math.max(0, Number(value)), 0) || 1;
       const bar = el("div", "waterfall");
       bar.setAttribute("role", "img");
       bar.setAttribute("aria-label", contributions.map(([factor, value]) => `${factor}: ${fmt(value, 2)} points`).join(", "));
-      const colors = ["#8fb8ce", "#7fc992", "#ff9042", "#d9a95a", "#5fb8ae"];
+      const colors = ["#786477", "#897288", "#9b809a", "#ac91aa", "#bea7bc"];
       contributions.forEach(([factor, value], index) => {
         const segment = document.createElement("i");
         segment.style.width = `${Math.max(0, Number(value)) / total * 100}%`;
@@ -527,8 +568,8 @@
     };
     for (const factor of FACTORS) {
       const value = row[`c_${factor}`];
-      const contribution = value == null || !Number.isFinite(Number(value)) ? "Contribution unavailable" : missing.has(factor) ? `Missing measurement; backend assigns ${fmt(value, 2)} points` : `${fmt(value, 2)} score points`;
-      box.append(el("p", "panel-note", `${factor}: ${contribution}. ${factorMeaning[factor]}`));
+      const contribution = value == null || value === "" || !Number.isFinite(Number(value)) ? "Contribution unavailable" : missing.has(factor) ? `Missing measurement; backend assigns ${fmt(value, 2)} points` : `${fmt(value, 2)} score points`;
+      box.append(el("p", "panel-note", `${factor}: ${contribution}. Normalized API factor: ${fmt(row[`f_${factor}`], 3)}. ${factorMeaning[factor]}`));
     }
     box.append(el("p", "panel-note", "These are API-reported contributions, separate from raw sensor measurements. The score is an uncalibrated review priority, not a fire probability or spread prediction."));
   }
@@ -582,7 +623,7 @@
     box.append(el("h3", "score-heading", "Event observation history"));
     box.append(el("p", "panel-note", `${members.length} accepted observations in this response, independent of table filters. Gaps do not prove activity stopped; location differences alone do not prove physical spread.`));
     if (!members.length) { box.append(el("p", "panel-note", "No accepted observations are available for this event.")); return; }
-    const dataset = state.rows;
+    const dataset = state.datasetVersion;
     const visible = new Set(filteredRows().map(row => state.keys.get(row)));
     for (const [heading, items] of [["Chronological observations (UTC)", dated], ["Time unavailable or invalid", undated]]) {
       if (!items.length) continue;
@@ -598,13 +639,13 @@
         const button = el("button", "text-button", visible.has(key) ? "Select observation" : "Hidden by table filters");
         button.type = "button"; button.disabled = !visible.has(key); button.setAttribute("aria-pressed", String(state.selectedKey === key));
         button.addEventListener("click", () => {
-          if (state.rows !== dataset || button.disabled) return;
+          if (state.datasetVersion !== dataset || button.disabled) return;
           const restore = document.activeElement === button;
           selectObservation(key);
           // The dossier is rebuilt by selection. Find the equivalent by key, never by index or a data-derived selector.
           const successor = [...($("dossierContent")?.querySelectorAll?.(".event-history-row") || [])]
             .find(node => node.dataset.key === key)?.querySelector("button");
-          if (restore && state.rows === dataset && successor && !successor.disabled) successor.focus();
+          if (restore && state.datasetVersion === dataset && successor && !successor.disabled) successor.focus();
         });
         item.append(button); list.append(item);
       }
@@ -627,7 +668,7 @@
       ["Last observed", fmtTime(event?.last_seen ?? intel?.last_seen)],
       ["Top review priority", fmt(event?.top_score, 1)],
       ["Peak FRP (source units)", fmt(event?.peak_frp, 2)],
-      ["Event center", event && Number.isFinite(Number(event.lat)) && Number.isFinite(Number(event.lon)) ? `${fmt(event.lat, 4)}, ${fmt(event.lon, 4)}` : null]
+      ["API arithmetic center", event && event.lat != null && event.lon != null && Number.isFinite(Number(event.lat)) && Number.isFinite(Number(event.lon)) ? `${fmt(event.lat, 4)}, ${fmt(event.lon, 4)}` : null]
     ].forEach(([label, value]) => detailLine(info, label, value));
     box.append(info);
     const trend = intel?.trend;
@@ -651,6 +692,8 @@
       box.append(el("p", "panel-note", "Uncalibrated anomaly indicator. It is not a probability of fire."));
     }
     const members = state.rows.filter(row => row.event_id != null && String(row.event_id) === String(eventId));
+    const wrapped = window.PyroData?.bounds(members);
+    if (wrapped && wrapped.east > 180) box.append(el("p", "panel-note", "This event crosses the antimeridian. The API arithmetic center can be displaced; map navigation uses the smallest wrapped bounds of the supplied coordinates."));
     const possible = members.filter(row => row.persistent_source_status === "possible_persistent_source").length;
     box.append(el("h3", "score-heading", "Historical recurrence"));
     const insufficient = members.filter(row => row.persistent_source_status === "insufficient_history").length;
@@ -700,13 +743,12 @@
   function openEvent(eventId) {
     if (eventId == null) return;
     state.selectedEvent = String(eventId);
-    if ($("eventFilter")) {
-      state.filters.event = String(eventId);
-      $("eventFilter").value = String(eventId);
-    }
-    render();
-    renderDossier(eventId);
-    if ($("dossierContent")?.scrollIntoView) $("dossierContent").scrollIntoView({ block: "nearest" });
+    const members = state.rows.filter(row => row.event_id != null && String(row.event_id) === String(eventId));
+    const row = [...members].sort((a,b)=>compareBy(a,b,"score",false))[0];
+    if (row) selectObservation(state.keys.get(row), false);
+    else { renderDossier(eventId); workspace?.update(); }
+    renderEvents();
+
   }
   function selectObservation(key, openMap = true) {
     const row = state.rows.find(item => state.keys.get(item) === key);
@@ -718,10 +760,15 @@
     if (index >= state.limit) state.limit = index + 1;
     renderObservation(row);
     renderTable(list);
+    workspace?.selectionChanged();
     const marker = state.markers.get(key);
     if (marker && openMap && state.map) { marker.openPopup(); state.map.panTo(marker.getLatLng()); }
     const tableRow = [...$("tb").rows].find(item => item.dataset.key === key);
-    if (tableRow?.scrollIntoView) tableRow.scrollIntoView({ block: "nearest" });
+    const tableWrap = $("tableWrap");
+    if (tableRow?.getBoundingClientRect && tableWrap?.getBoundingClientRect) {
+      const rowRect=tableRow.getBoundingClientRect(), wrapRect=tableWrap.getBoundingClientRect();
+      if(rowRect.top < wrapRect.top || rowRect.bottom > wrapRect.bottom) tableWrap.scrollTop += rowRect.top - wrapRect.top;
+    }
   }
 
   function renderTable(rows) {
@@ -767,11 +814,8 @@
     setText("emptyText", state.rows.length ? "Clear filters to see the full dataset." : "Load a dataset from the API to begin.");
     if ($("clearFromEmpty")) $("clearFromEmpty").hidden = !state.rows.length || !!rows.length;
     if ($("exportCsv")) $("exportCsv").disabled = !state.rows.length;
-    if (state.selectedKey && !rows.some(row => state.keys.get(row) === state.selectedKey)) {
-      state.selectedKey = null;
-      renderObservation(null);
-    }
   }
+
   function renderIngestion() {
     const ingestion = state.ingestion;
     const container = $("ingestionSummary");
@@ -824,6 +868,7 @@
     }
   }
   function renderEvents() {
+    if (workspace) { workspace.renderExplorer(); return; }
     const box = $("eventContent");
     if (!box) return;
     box.replaceChildren();
@@ -874,11 +919,11 @@
   function renderStatus() {
     setText("datasetMessage", state.message || "");
     if ($("datasetMessage")) $("datasetMessage").classList.toggle("error-text", !!state.error);
-    if ($("connectionDot")) {
-      $("connectionDot").classList.toggle("is-error", !!state.error);
-      $("connectionDot").classList.toggle("is-ready", !!state.ingestion && !state.error);
-    }
+    setText("connectionStatus", state.apiConnected === true ? "API connected" : state.apiConnected === false ? "API unavailable" : "Checking API…");
+    $("connectionDot")?.classList.toggle("is-error", state.apiConnected === false);
+    $("connectionDot")?.classList.toggle("is-ready", state.apiConnected === true);
   }
+
   function render() {
     renderStatus();
     renderIngestion();
@@ -916,6 +961,7 @@
     }
     syncWeightVisibility();
     if (state.duel) renderDuel(rows);
+    workspace?.update();
   }
 
   function syncWeightVisibility() {
@@ -999,12 +1045,14 @@
   function commandList(query = "") {
     const items = [
       ["Load synthetic sample", "Dataset", () => loadSample()],
-      ["Focus observation search", "Navigate", () => $("search")?.focus()],
+      ["Focus observation search", "Navigate", () => { workspace?.navigate("dashboard"); if ($("filterRail")?.hidden) $("toggleFilters")?.click(); $("search")?.focus(); }],
       ["Jump to ranking", "Navigate", () => $("tableHeading")?.scrollIntoView({ block: "start" })],
       ["Reset filters", "Filters", resetFilters],
       ["Show priority map", "Map", () => setMapMode(false)],
       ["Compare triage and FRP rankings", "Map", () => setMapMode(true)],
-      ["Open ingestion report", "Dataset", () => $("ingestionHeading")?.scrollIntoView({ block: "nearest" })],
+      ["Open ingestion report", "Dataset", () => workspace?.navigate("data")],
+      ["Open analytics", "Navigate", () => workspace?.navigate("analytics")],
+      ["Generate evidence report", "Reports", () => workspace?.navigate("reports")],
       ...state.events.filter(event => event.event_id != null).map(event =>
         [`Open event ${event.event_id}`, "Events", () => openEvent(event.event_id)])
     ];
@@ -1183,20 +1231,25 @@
     bindPalette();
   }
   async function checkHealth() {
+    if (state.healthBusy) return;
+    state.healthBusy = true;
     try {
       const result = await request("/api/health");
       if (result.ok !== true) throw new Error("Health endpoint returned an unexpected response.");
+      state.apiConnected = true;
       setText("connectionStatus", "API connected");
       $("connectionDot")?.classList.add("is-ready");
     } catch (error) {
+      state.apiConnected = false;
       setText("connectionStatus", "API unavailable");
       $("connectionDot")?.classList.add("is-error");
       state.error = true;
       state.message = error.message;
       renderStatus();
-    }
+    } finally { state.healthBusy = false; renderStatus(); }
   }
 
+  workspace = window.PyroWorkspace?.create({state, el, $, fmt, fmtTime, openEvent, selectObservation, setMapMode, checkHealth, upload, loadSample, announce, toast, filteredRows, render});
   bind();
   initMaps();
   resetTimeline([]);
